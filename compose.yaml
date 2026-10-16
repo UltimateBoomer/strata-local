@@ -1,0 +1,66 @@
+name: strata-local
+
+x-runtime: &runtime
+  image: localhost/strata-local:hip
+  build:
+    context: .
+    dockerfile: Containerfile
+    args:
+      HIP_ARCHITECTURES: "${HIP_ARCHITECTURES:-gfx1101}"
+      BUILD_JOBS: "${BUILD_JOBS:-2}"
+  platform: linux/amd64
+  volumes:
+    - strata-data:/data
+    - ./config/model.json:/config/model.json:ro,z
+    - ./config/server.json:/config/server.json:ro,z
+
+services:
+  model-init:
+    <<: *runtime
+    restart: "no"
+    entrypoint: [python, /usr/local/lib/strata-local/model-init.py]
+    environment:
+      STRATA_VERIFY_EXISTING: "${STRATA_VERIFY_EXISTING:-0}"
+    secrets:
+      - source: strata-local-hf-token
+        target: hf_token
+
+  strata-server:
+    <<: *runtime
+    restart: unless-stopped
+    depends_on:
+      model-init:
+        condition: service_completed_successfully
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    group_add:
+      - keep-groups
+    security_opt:
+      - label=disable
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    ports:
+      - "${STRATA_BIND_ADDRESS:-192.168.0.66}:${STRATA_PORT:-9931}:8080"
+    environment:
+      HIP_VISIBLE_DEVICES: "${STRATA_GPU:-0}"
+    secrets:
+      - source: strata-local-api-key
+        target: strata_api_key
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 600s
+      retries: 3
+
+volumes:
+  strata-data:
+
+secrets:
+  strata-local-api-key:
+    external: true
+  strata-local-hf-token:
+    external: true
