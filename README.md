@@ -12,14 +12,15 @@ See [supported models](https://github.com/Niko1221/Strata/blob/main/docs/MODELS.
 
 ## Requirements
 
-- Linux x86-64, Podman, `podman-compose`, `crun`, Python 3, and systemd 256 or
+- Linux x86-64, Podman, `podman-compose`, Python 3, and systemd 256 or
   newer (`systemd-creds`, `varlinkctl`).
 - A supported AMD GPU; the image defaults to `gfx1101` (RX 7700/7800 XT).
   Set `HIP_ARCHITECTURES` when building for another supported card. See
   [upstream HIP documentation](https://github.com/Niko1221/Strata/blob/main/docs/AMD_HIP.md).
-- Host amdgpu driver with `/dev/kfd` and `/dev/dri` accessible to your user.
-  Your user must belong to the device-owning groups (usually `render` and
-  `video`); log in again after changing membership. `keep-groups` requires crun.
+- Host amdgpu driver with `/dev/kfd` and the `/dev/dri/renderD*` nodes readable
+  and writable by everyone, the default on current Fedora (`ls -l` shows
+  `crw-rw-rw-`). Supplementary groups such as `render` do not reach rootless
+  containers, so group-only access is not enough.
 - About 48 GB RAM, 16 GB VRAM and **at least 140 GB free SSD space**, plus
   space for the ROCm build image. The two GGUFs total about 66.4 GB; packing
   duplicates the expert weights; MTP needs downloaded and prepared copies.
@@ -87,28 +88,41 @@ Use your stored API key as a Bearer token and request model
 `qwen3.8-flash-next-q2_0`. The server also exposes `/v1/models`.
 `make down` preserves the model volume and credentials.
 
-### Systemd (Quadlet)
+### Remote host
 
-To run under the current user's systemd manager instead of Compose, for example
-as a dedicated service user with lingering enabled:
+The same targets deploy to another machine's rootless Podman over SSH; no
+checkout is needed there. Add a connection with the remote user, address and
+socket path written out (Podman does not apply `~/.ssh/config` aliases), then
+select it with `CONTAINER_CONNECTION`:
 
 ```sh
-make down    # if the Compose deployment is running
-make quadlet
-systemctl --user start strata-server
-journalctl --user -fu strata-server
+podman system connection add pc26 ssh://podman-svc@192.168.0.66/run/user/962/podman/podman.sock
+export CONTAINER_CONNECTION=pc26
+STRATA_BIND_ADDRESS=192.168.0.66 HIP_ARCHITECTURES=gfx1101 make up
+make logs
 ```
 
-`make quadlet` registers the secrets, builds the image, renders `quadlet/` into
-`${XDG_CONFIG_HOME:-$HOME/.config}/containers/systemd/strata-local` and reloads
-systemd. It reads the same `.env` settings, writes this checkout's absolute
-config paths into the units and validates them with the Quadlet generator before
-installing; re-run it after moving the checkout or changing `.env`. The units
-use the Compose volume, so either deployment reuses the prepared model.
-`strata-model-init` is a one-shot dependency of `strata-server`, and the server
-starts at login (or boot, with lingering) and counts as started once healthy.
-After changing `config/`, run
-`systemctl --user restart strata-model-init strata-server`.
+Builds upload this checkout as the build context and compile on the remote
+host, so set `HIP_ARCHITECTURES` for its GPU. `make up` also imports `config/`
+into the remote `strata-local-config` volume. `STRATA_BIND_ADDRESS`
+names the remote host's addresses. `make secrets` decrypts the credentials here
+and stores them with the remote's default Podman secret driver, replacing them on
+each run: on the remote host they are readable by its Podman user and root, not
+encrypted to a TPM. An absent HF token is stored as a newline.
+
+One-time setup on the remote host, as an administrator, for a service user such
+as `podman-svc` (UID 962 here):
+
+- subuid and subgid ranges (`usermod --add-subuids ... --add-subgids ...`),
+  then `podman system migrate` as that user;
+- lingering and the API socket: `loginctl enable-linger podman-svc` and
+  `systemctl --user -M podman-svc@ enable --now podman.socket`;
+- an unlimited memlock limit for its user manager, for example
+  `LimitMEMLOCK=infinity` in `/etc/systemd/system/user@962.service.d/memlock.conf`;
+  rootless Podman silently lowers the requested limit to the hard limit;
+- `systemctl --user -M podman-svc@ enable podman-restart.service`, so the
+  `unless-stopped` server starts again at boot;
+- SSH forwarding to the socket allowed for that user, including SELinux.
 
 ## Configuration
 
@@ -135,7 +149,11 @@ download. Re-run `make up` after changing these settings.
 ### Text generation
 
 Edit `config/server.json`, which uses Strata's native server configuration format
-and is mounted directly at `/config/server.json`. The initializer does not
+and is imported with `config/model.json` into the `strata-local-config`
+volume mounted read-only at `/config` (`make config`; `make up` runs it).
+Importing overwrites both files but leaves files deleted from `config/` in the
+volume; run `podman volume rm strata-local-config` with the containers removed
+to clear them. The initializer does not
 rewrite it or translate settings into engine arguments. Engine options belong
 in the native `args` array: `--prefill`, `--pool-workers`, `--vram-reserve-mib`,
 and `--adapt-every` can be edited there. `--adapt-every` is currently `0`
@@ -263,7 +281,7 @@ Stop other GPU inference servers first. Calibration measures PCIe share, draft
 confidence, CPU worker count, and adaptive expert-cache settings; it can take
 15–30 minutes or longer. It prints recommended settings and measurements without
 editing the configuration. Apply the desired settings to `config/server.json`,
-then restart serving with `podman compose up -d --no-deps strata-server`.
+then restart serving with `make up`.
 The server stays stopped if calibration finishes or fails.
 
 For a small sequential performance sample against a running server:

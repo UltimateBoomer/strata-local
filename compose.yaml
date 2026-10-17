@@ -11,8 +11,7 @@ x-runtime: &runtime
   platform: linux/amd64
   volumes:
     - strata-data:/data
-    - ./config/model.json:/config/model.json:ro,z
-    - ./config/server.json:/config/server.json:ro,z
+    - strata-config:/config:ro
 
 services:
   model-init:
@@ -34,8 +33,6 @@ services:
     devices:
       - /dev/kfd:/dev/kfd
       - /dev/dri:/dev/dri
-    group_add:
-      - keep-groups
     security_opt:
       - label=disable
     ulimits:
@@ -59,6 +56,10 @@ services:
 
 volumes:
   strata-data:
+  # Filled from config/ by make config, so it also works with a remote Podman.
+  strata-config:
+    name: strata-local-config
+    external: true
 
 secrets:
   strata-local-api-key:

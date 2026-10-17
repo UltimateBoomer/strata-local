@@ -13,6 +13,22 @@ fi
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 driver=$script_dir/podman-secret-driver.sh
 
+# A remote Podman cannot run this host's driver scripts, so decrypt here and store the
+# values with the remote's default driver, replacing them on every run.
+if [ -n "${CONTAINER_CONNECTION:-}${CONTAINER_HOST:-}" ]; then
+  api_key=$("$script_dir/credentials.sh" lookup strata_api_key)
+  if [ -z "$api_key" ]; then
+    echo 'The Strata API key credential is empty' >&2
+    exit 1
+  fi
+  hf_token=$("$script_dir/credentials.sh" lookup hf_token)
+  # Podman rejects empty secrets; the trailing newline keeps an absent HF token nonempty,
+  # and both readers strip it.
+  printf '%s\n' "$api_key" | podman secret create --replace strata-local-api-key - >/dev/null
+  printf '%s\n' "$hf_token" | podman secret create --replace strata-local-hf-token - >/dev/null
+  exit 0
+fi
+
 # Fail before modifying Podman registration if the mandatory key is unavailable.
 "$driver" check strata_api_key
 
