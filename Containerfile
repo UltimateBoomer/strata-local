@@ -1,6 +1,8 @@
 FROM docker.io/rocm/dev-ubuntu-24.04:7.0.2
 
-ARG STRATA_REVISION=a0116b2782a5b82622358c04a06496485d12b2d6
+# Our fork of Niko1221/Strata: upstream plus the disk-backed conversation cache.
+ARG STRATA_REPOSITORY=https://github.com/UltimateBoomer/Strata.git
+ARG STRATA_REVISION=9f4e310848afc608f31370a9f1a848e9251050d4
 ARG HIP_ARCHITECTURES=gfx1101
 ARG BUILD_JOBS=8
 # Use the llama.cpp revision pinned by the selected Strata checkout.
@@ -10,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     hipblas-dev rocblas-dev hipblaslt-dev \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /opt/strata
-RUN git init . && git remote add origin https://github.com/Niko1221/Strata.git \
+RUN git init . && git remote add origin "$STRATA_REPOSITORY" \
     && git fetch --depth 1 origin "$STRATA_REVISION" && git checkout --detach FETCH_HEAD \
     && test "$(git rev-parse HEAD)" = "$STRATA_REVISION" \
     && LLAMA_REVISION="$(awk 'NR == 1 { print $1; exit }' third_party/ggml/VERSION.txt)" \
@@ -24,10 +26,6 @@ RUN python3 -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir -r requirements.txt
 ENV PATH=/opt/venv/bin:/opt/rocm/bin:$PATH \
     STRATA_GGUF_PY=/opt/llama.cpp/gguf-py
-# Local changes to the pinned Strata revision (patches/README.md), applied before compiling.
-COPY patches/ /tmp/strata-patches/
-RUN for p in /tmp/strata-patches/strata-*.patch; do git apply --verbose "$p" || exit 1; done \
-    && rm -rf /tmp/strata-patches
 RUN cmake -S . -B build-hip -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_PREFIX_PATH=/opt/rocm \
     -DSTRATA_ENABLE_HIP=ON -DSTRATA_ENABLE_CUDA=OFF \

@@ -168,8 +168,8 @@ count to fit available memory; `/v1/status` reports the effective count in
 `concurrency.serving`. See the
 [upstream batching guide](https://github.com/Niko1221/Strata/blob/main/docs/BATCHING.md).
 
-Conversation parking is on disk, through the local engine patch in
-[`patches/`](patches/README.md): `--conversation-cache-dir /data/convcache` in
+Conversation parking is on disk, through our fork's `--conversation-cache-dir`
+(see the Strata pin below): `--conversation-cache-dir /data/convcache` in
 `args` writes each conversation the engine switches away from to the `strata-data`
 volume, and restores it when a request continues it, avoiding repeated prompt
 processing (about 1 s instead of about 47 s for a 22K-token prompt). Parked
@@ -253,11 +253,14 @@ Compose loads automatically; re-run it after changing the list:
 | `BUILD_JOBS` | `2` | Limit compiler memory use |
 | `STRATA_VERIFY_EXISTING` | `0` | Set to `1` to checksum existing GGUFs during initialization |
 
-The image pins Strata v0.1.40.3 commit `d5ea7133741e67743c0e886bb426c0ce8d69cf6c`,
-llama.cpp commit `3cf03257f219afbe7334045ff7c6a06ac68c627d` (the release's upstream
-dependency pin), and the ROCm 7.0.2 development image tag. The base tag
-is not digest pinned. This Strata revision includes the HIP-compatible
-shared-memory alignment fix upstream; no build-time source patch is needed.
+The image builds Strata from our fork,
+[UltimateBoomer/Strata](https://github.com/UltimateBoomer/Strata), at the commit
+in the `Containerfile`'s `STRATA_REVISION`: upstream
+[Niko1221/Strata](https://github.com/Niko1221/Strata) plus the disk-backed
+conversation cache. To change the engine, push a commit to the fork and update
+`STRATA_REVISION` (or pass `--build-arg STRATA_REVISION=...`). The llama.cpp
+commit is the one that Strata revision pins in `third_party/ggml/VERSION.txt`.
+The ROCm 7.0.2 development image tag is not digest pinned.
 hipBLAS, rocBLAS and hipBLASLt development packages are
 installed inside the image; the base image's HIP compiler alone is insufficient
 for Strata's BLAS dependency. GPU containers disable SELinux label separation to permit
