@@ -3,8 +3,8 @@
 Run Strata's OpenAI- and Anthropic-compatible API in rootless Podman with an
 AMD HIP image. This follows `../llamacpp-local`: `make up` builds the image,
 waits for a one-shot model initializer, then recreates the authenticated server.
-The default endpoint is `http://192.168.0.66:9931/v1`, using the configured
-Compose host port.
+The endpoint is `http://<host>:9931/v1` at each address listed in
+`STRATA_BIND_ADDRESS`, using the configured Compose host port.
 
 The default is **Qwen3.8-Flash-Next Q2_0**, with CPU image encoding,
 200000 context, INT8 KV and MTP drafting. It uses the original full-expert model.
@@ -79,7 +79,7 @@ prevents `make up` from launching the server.
 
 ```sh
 podman compose ps
-curl --fail http://192.168.0.66:9931/health
+curl --fail http://127.0.0.1:9931/health
 make down
 ```
 
@@ -196,11 +196,16 @@ The default leaves 3072 MiB VRAM for the desktop and uses resident low-RAM
 experts with pageable HIP host copies. These are starting settings, not measured
 performance claims on this machine.
 
-Compose accepts these environment overrides (or an ignored `.env` file):
+Compose accepts these environment overrides (or an ignored `.env` file).
+`STRATA_BIND_ADDRESS` has no default; set it in `.env` to one or more addresses,
+separated by commas or spaces, for example
+`STRATA_BIND_ADDRESS=127.0.0.1,192.168.1.10`. `make up` (or `make ports`)
+writes the matching port mappings to the ignored `compose.override.yaml`, which
+Compose loads automatically; re-run it after changing the list:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `STRATA_BIND_ADDRESS` | `192.168.0.66` | Host interface; use `127.0.0.1` for local access |
+| `STRATA_BIND_ADDRESS` | required | Host interfaces to publish on, comma- or space-separated |
 | `STRATA_PORT` | `9931` | Published host port |
 | `STRATA_GPU` | `0` | HIP device ordinal; an integrated GPU may occupy 0 |
 | `HIP_ARCHITECTURES` | `gfx1101` | Image build target |
@@ -244,7 +249,8 @@ For a small sequential performance sample against a running server:
 python3 scripts/bench.py --label baseline > /tmp/strata-baseline.json
 ```
 
-This reads the API key from its systemd credential or `STRATA_API_KEY`, performs one warmup
+`--url` defaults to `http://127.0.0.1:9931`; pass the server's address when it is
+bound elsewhere. This reads the API key from its systemd credential or `STRATA_API_KEY`, performs one warmup
 and three short/three longer fresh-prefix requests, capped at 128 output tokens.
 It records wall time, time to first streamed content/reasoning, usage, and the
 local server configuration. Keep the server running that configuration and

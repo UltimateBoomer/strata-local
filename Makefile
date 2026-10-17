@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := up
 COMPOSE ?= podman compose
 
-.PHONY: set-api-key set-hf-token migrate-keyring-secrets secrets build init up down logs calibrate check
+.PHONY: set-api-key set-hf-token migrate-keyring-secrets secrets build init ports up down logs calibrate check
 set-api-key:
 	./scripts/credentials.sh store strata_api_key
 set-hf-token:
@@ -28,4 +28,4 @@ calibrate:
 check:
 	python3 -m unittest discover -s tests -v
 	sh -n scripts/credentials.sh scripts/register-podman-secrets.sh scripts/podman-secret-driver.sh
-	podman-compose config >/dev/null
+	podman-compose -f compose.yaml config >/dev/null

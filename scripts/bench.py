@@ -2,17 +2,17 @@
 import argparse
 import json
 import os
-from pathlib import Path
 import subprocess
 import time
 import uuid
+from pathlib import Path
 
 import requests
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--url', default='http://192.168.0.66:9931')
+    parser.add_argument("--url", default="http://127.0.0.1:9931")
     parser.add_argument('--label', default='baseline')
     parser.add_argument('--repeats', type=int, default=3)
     parser.add_argument('--max-tokens', type=int, default=128)

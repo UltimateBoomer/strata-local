@@ -43,7 +43,8 @@ services:
         soft: -1
         hard: -1
     ports:
-      - "${STRATA_BIND_ADDRESS:-192.168.0.66}:${STRATA_PORT:-9931}:8080"
+      - "127.0.0.1:${STRATA_PORT:-9931}:8080"
+      - "${STRATA_BIND_ADDRESS:?set STRATA_BIND_ADDRESS in .env}:${STRATA_PORT:-9931}:8080"
     environment:
       HIP_VISIBLE_DEVICES: "${STRATA_GPU:-0}"
     secrets:
