@@ -1,0 +1,32 @@
+[Unit]
+Description=Strata API server
+Requires=strata-model-init.service
+After=strata-model-init.service
+
+[Container]
+Image=localhost/strata-local:hip
+Volume=strata-data.volume:/data
+Volume=@REPO@/config/model.json:/config/model.json:ro,z
+Volume=@REPO@/config/server.json:/config/server.json:ro,z
+AddDevice=/dev/kfd
+AddDevice=/dev/dri
+GroupAdd=keep-groups
+SecurityLabelDisable=true
+Ulimit=memlock=-1:-1
+@PUBLISH@
+Environment=HIP_VISIBLE_DEVICES=@GPU@
+Secret=strata-local-api-key,target=strata_api_key
+HealthCmd=python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5)"
+HealthInterval=30s
+HealthTimeout=10s
+HealthStartPeriod=600s
+HealthRetries=3
+Notify=healthy
+
+[Service]
+Restart=on-failure
+# Model loading counts toward startup until the health check passes.
+TimeoutStartSec=900
+
+[Install]
+WantedBy=default.target

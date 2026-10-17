@@ -87,6 +87,29 @@ Use your stored API key as a Bearer token and request model
 `qwen3.8-flash-next-q2_0`. The server also exposes `/v1/models`.
 `make down` preserves the model volume and credentials.
 
+### Systemd (Quadlet)
+
+To run under the current user's systemd manager instead of Compose, for example
+as a dedicated service user with lingering enabled:
+
+```sh
+make down    # if the Compose deployment is running
+make quadlet
+systemctl --user start strata-server
+journalctl --user -fu strata-server
+```
+
+`make quadlet` registers the secrets, builds the image, renders `quadlet/` into
+`${XDG_CONFIG_HOME:-$HOME/.config}/containers/systemd/strata-local` and reloads
+systemd. It reads the same `.env` settings, writes this checkout's absolute
+config paths into the units and validates them with the Quadlet generator before
+installing; re-run it after moving the checkout or changing `.env`. The units
+use the Compose volume, so either deployment reuses the prepared model.
+`strata-model-init` is a one-shot dependency of `strata-server`, and the server
+starts at login (or boot, with lingering) and counts as started once healthy.
+After changing `config/`, run
+`systemctl --user restart strata-model-init strata-server`.
+
 ## Configuration
 
 ### Images

@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := up
 COMPOSE ?= podman compose
 
-.PHONY: set-api-key set-hf-token migrate-keyring-secrets secrets build init ports up down logs calibrate check
+.PHONY: set-api-key set-hf-token migrate-keyring-secrets secrets build init ports up down logs calibrate quadlet check
 set-api-key:
 	./scripts/credentials.sh store strata_api_key
 set-hf-token:
@@ -25,7 +25,12 @@ logs:
 calibrate:
 	$(COMPOSE) stop strata-server
 	$(COMPOSE) run --rm --no-deps -T --entrypoint python strata-server /opt/strata/tools/calibrate.py /config/server.json
+# Install systemd units for the current user; start with: systemctl --user start strata-server
+quadlet: secrets build
+	python3 -I scripts/install-quadlet.py
+	systemctl --user daemon-reload
 check:
 	python3 -m unittest discover -s tests -v
 	sh -n scripts/credentials.sh scripts/register-podman-secrets.sh scripts/podman-secret-driver.sh
 	podman-compose -f compose.yaml config >/dev/null
+	STRATA_BIND_ADDRESS=127.0.0.1 python3 -I scripts/install-quadlet.py --check

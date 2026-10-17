@@ -1,0 +1,3 @@
+# Shares the Compose project's volume, so switching between Compose and Quadlet keeps the model.
+[Volume]
+VolumeName=strata-local_strata-data
