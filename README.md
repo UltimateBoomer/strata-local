@@ -7,7 +7,7 @@ The default endpoint is `http://192.168.0.66:9931/v1`, using the configured
 Compose host port.
 
 The default is **Qwen3.8-Flash-Next Q2_0**, with CPU image encoding,
-120000 context, INT8 KV and MTP drafting. It uses the original full-expert model.
+200000 context, INT8 KV and MTP drafting. It uses the original full-expert model.
 See [supported models](https://github.com/Niko1221/Strata/blob/main/docs/MODELS.md).
 
 ## Requirements
