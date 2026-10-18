@@ -24,6 +24,8 @@
     "0",
     "--conversation-cache-dir",
     "/data/convcache",
+    "--conversation-cache-min-tokens",
+    "4096",
     "--pack",
     "/data/pack",
     "--native",
