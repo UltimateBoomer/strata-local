@@ -252,8 +252,10 @@ Compose accepts these environment overrides (or an ignored `.env` file):
 The image builds Strata from our fork,
 [UltimateBoomer/Strata](https://github.com/UltimateBoomer/Strata), at the commit
 in the `Containerfile`'s `STRATA_REVISION`: upstream
-[Niko1221/Strata](https://github.com/Niko1221/Strata) plus the disk-backed
-conversation cache. To change the engine, push a commit to the fork and update
+[Niko1221/Strata](https://github.com/Niko1221/Strata) v0.1.45 plus the disk-backed
+conversation cache, which also lends a parked conversation's shared prefix (a
+sibling subagent's system prompt and tools) to a new conversation straight from
+its file. To change the engine, push a commit to the fork and update
 `STRATA_REVISION` (or pass `--build-arg STRATA_REVISION=...`). The llama.cpp
 commit is the one that Strata revision pins in `third_party/ggml/VERSION.txt`.
 The ROCm 7.0.2 development image tag is not digest pinned.
