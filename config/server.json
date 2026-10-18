@@ -26,6 +26,8 @@
     "/data/convcache",
     "--conversation-cache-min-tokens",
     "4096",
+    "--conversation-cache-skip-tail",
+    "4096",
     "--pack",
     "/data/pack",
     "--native",
