@@ -173,16 +173,24 @@ Conversation parking is on disk, through our fork's `--conversation-cache-dir`
 (see the Strata pin below): `--conversation-cache-dir /data/convcache` in
 `args` writes each conversation the engine switches away from to the `strata-data`
 volume, and restores it when a request continues it, avoiding repeated prompt
-processing (about 1 s instead of about 47 s for a 22K-token prompt). Parked
-conversations survive restarts. `--conversation-cache-mib 16384` caps the files'
-total size, removing the oldest first (also at startup after the cap is lowered),
-and `--conversation-cache-slots 0` removes the slot limit. A file is about 0.7 GB
-per 22K tokens, up to about 2.5 GB at full context. Restoring briefly reads the
-file into RAM; the default 2560 MiB free-RAM floor still applies, and a snapshot
-that cannot fit falls back to ordinary prompt processing. Files from another model
-or engine configuration are removed at startup, so changing settings that affect
-the cached state (such as `--kv` or `--max-context`) discards them. `/metrics`
-exposes usage, restores and evictions under `conversation_cache`.
+processing (about 1 s instead of about 47 s for a 22K-token prompt). The K/V is
+streamed between the file and the GPU, so a restore holds only the running state
+and checkpoints in RAM; the default 2560 MiB free-RAM floor still applies, and a
+conversation that cannot be parked or read back falls back to ordinary prompt
+processing. A conversation read back keeps its file, and parking it again updates
+that file in place: only the new K/V, the new checkpoints and the running state are
+written (about 240 MB instead of the whole 0.9-1.1 GB file for an 18K-token
+conversation on pc26). A sibling conversation that shares a parked one's system
+prompt and tools borrows that prefix straight from its file. Files are 0.75-1.1 GB
+at 18K tokens (each checkpoint adds about 118 MB) and about 3.4 GB at 166K tokens.
+`--conversation-cache-mib 16384` caps what the files hold, removing the oldest
+first, and `--conversation-cache-slots 0` removes the slot limit.
+`--conversation-cache-min-tokens 4096` keeps short side requests (a client's title
+or summary call) from being parked, so they cannot push a long conversation out,
+and `--conversation-cache-skip-tail 4096` does not park a conversation whose client
+only rewrote its last reply (re-rendered without its reasoning). Parked
+conversations last as long as the engine: every park file is removed when it
+starts. `/metrics` exposes usage, restores and evictions under `conversation_cache`.
 
 Manual session files are also enabled: `slot_save_path` is `/data/sessions`, so
 `POST /slots/0?action=save|restore` with `{"filename": "NAME.bin"}` saves or
@@ -253,9 +261,7 @@ The image builds Strata from our fork,
 [UltimateBoomer/Strata](https://github.com/UltimateBoomer/Strata), at the commit
 in the `Containerfile`'s `STRATA_REVISION`: upstream
 [Niko1221/Strata](https://github.com/Niko1221/Strata) v0.1.45 plus the disk-backed
-conversation cache, which also lends a parked conversation's shared prefix (a
-sibling subagent's system prompt and tools) to a new conversation straight from
-its file. To change the engine, push a commit to the fork and update
+conversation cache described above. To change the engine, push a commit to the fork and update
 `STRATA_REVISION` (or pass `--build-arg STRATA_REVISION=...`). The llama.cpp
 commit is the one that Strata revision pins in `third_party/ggml/VERSION.txt`.
 The ROCm 7.0.2 development image tag is not digest pinned.
