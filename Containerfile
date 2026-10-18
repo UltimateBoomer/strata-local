@@ -1,8 +1,8 @@
 FROM docker.io/rocm/dev-ubuntu-24.04:7.0.2
 
-# Our fork of Niko1221/Strata: upstream plus the disk-backed conversation cache.
+# Our fork of Niko1221/Strata: upstream plus the disk-backed conversation cache, read back by streaming.
 ARG STRATA_REPOSITORY=https://github.com/UltimateBoomer/Strata.git
-ARG STRATA_REVISION=9f4e310848afc608f31370a9f1a848e9251050d4
+ARG STRATA_REVISION=76f34108b26efbf0ffab8108c971a4adea0f082f
 ARG HIP_ARCHITECTURES=gfx1101
 ARG BUILD_JOBS=8
 # Use the llama.cpp revision pinned by the selected Strata checkout.
