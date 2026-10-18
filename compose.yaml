@@ -9,6 +9,9 @@ x-runtime: &runtime
       HIP_ARCHITECTURES: "${HIP_ARCHITECTURES:-gfx1101}"
       BUILD_JOBS: "${BUILD_JOBS:-2}"
   platform: linux/amd64
+  # A file log, not journald: a rootless system user (UID < 1000) cannot read its containers' journald entries.
+  logging:
+    driver: k8s-file
   volumes:
     - strata-data:/data
     - strata-config:/config:ro
@@ -40,8 +43,7 @@ services:
         soft: -1
         hard: -1
     ports:
-      - "127.0.0.1:${STRATA_PORT:-9931}:8080"
-      - "${STRATA_BIND_ADDRESS:?set STRATA_BIND_ADDRESS in .env}:${STRATA_PORT:-9931}:8080"
+      - "${STRATA_BIND_ADDRESS:-127.0.0.1}:${STRATA_PORT:-9931}:8080"
     environment:
       HIP_VISIBLE_DEVICES: "${STRATA_GPU:-0}"
     secrets:

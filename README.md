@@ -3,8 +3,8 @@
 Run Strata's OpenAI- and Anthropic-compatible API in rootless Podman with an
 AMD HIP image. This follows `../llamacpp-local`: `make up` builds the image,
 waits for a one-shot model initializer, then recreates the authenticated server.
-The endpoint is `http://<host>:9931/v1` at each address listed in
-`STRATA_BIND_ADDRESS`, using the configured Compose host port.
+The endpoint is `http://127.0.0.1:9931/v1` by default; set
+`STRATA_BIND_ADDRESS` to publish on another interface.
 
 The default is **Qwen3.8-Flash-Next Q2_0**, with CPU image encoding,
 200000 context, INT8 KV and MTP drafting. It uses the original full-expert model.
@@ -98,14 +98,15 @@ select it with `CONTAINER_CONNECTION`:
 ```sh
 podman system connection add pc26 ssh://podman-svc@192.168.0.66/run/user/962/podman/podman.sock
 export CONTAINER_CONNECTION=pc26
-STRATA_BIND_ADDRESS=192.168.0.66 HIP_ARCHITECTURES=gfx1101 make up
+STRATA_BIND_ADDRESS=0.0.0.0 HIP_ARCHITECTURES=gfx1101 make up
 make logs
 ```
 
 Builds upload this checkout as the build context and compile on the remote
 host, so set `HIP_ARCHITECTURES` for its GPU. `make up` also imports `config/`
 into the remote `strata-local-config` volume. `STRATA_BIND_ADDRESS`
-names the remote host's addresses. `make secrets` decrypts the credentials here
+names a remote host address; without it the server is reachable only from the
+remote host itself. `make secrets` decrypts the credentials here
 and stores them with the remote's default Podman secret driver, replacing them on
 each run: on the remote host they are readable by its Podman user and root, not
 encrypted to a TPM. An absent HF token is stored as a newline.
@@ -237,16 +238,11 @@ The default leaves 3072 MiB VRAM for the desktop and uses resident low-RAM
 experts with pageable HIP host copies. These are starting settings, not measured
 performance claims on this machine.
 
-Compose accepts these environment overrides (or an ignored `.env` file).
-`STRATA_BIND_ADDRESS` has no default; set it in `.env` to one or more addresses,
-separated by commas or spaces, for example
-`STRATA_BIND_ADDRESS=127.0.0.1,192.168.1.10`. `make up` (or `make ports`)
-writes the matching port mappings to the ignored `compose.override.yaml`, which
-Compose loads automatically; re-run it after changing the list:
+Compose accepts these environment overrides (or an ignored `.env` file):
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `STRATA_BIND_ADDRESS` | required | Host interfaces to publish on, comma- or space-separated |
+| `STRATA_BIND_ADDRESS` | `127.0.0.1` | Host interface to publish on; `0.0.0.0` for all, including loopback |
 | `STRATA_PORT` | `9931` | Published host port |
 | `STRATA_GPU` | `0` | HIP device ordinal; an integrated GPU may occupy 0 |
 | `HIP_ARCHITECTURES` | `gfx1101` | Image build target |
