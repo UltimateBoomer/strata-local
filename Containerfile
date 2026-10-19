@@ -1,8 +1,8 @@
 FROM docker.io/rocm/dev-ubuntu-24.04:7.0.2
 
-# Our fork of Niko1221/Strata: upstream v0.1.45 plus the disk-backed conversation cache (park files updated in place, read back by streaming, borrowed from).
+# Our fork of Niko1221/Strata: upstream v0.2.0-beta plus the disk-backed conversation cache (park files updated in place, read back by streaming, borrowed from).
 ARG STRATA_REPOSITORY=https://github.com/UltimateBoomer/Strata.git
-ARG STRATA_REVISION=d06ee704cca84d2833c6516b2c02f204173e5501
+ARG STRATA_REVISION=06d1eac3a87a580d560b9ad819d41bc3599caf48
 ARG HIP_ARCHITECTURES=gfx1101
 ARG BUILD_JOBS=8
 # Use the llama.cpp revision pinned by the selected Strata checkout.
@@ -23,7 +23,7 @@ RUN git init . && git remote add origin "$STRATA_REPOSITORY" \
     && git -C /opt/llama.cpp checkout --detach FETCH_HEAD \
     && test "$(git -C /opt/llama.cpp rev-parse HEAD)" = "$LLAMA_REVISION"
 RUN python3 -m venv /opt/venv \
-    && /opt/venv/bin/pip install --no-cache-dir -r requirements.txt
+    && /opt/venv/bin/pip install --no-cache-dir -r requirements.txt -r requirements-build.txt
 ENV PATH=/opt/venv/bin:/opt/rocm/bin:$PATH \
     STRATA_GGUF_PY=/opt/llama.cpp/gguf-py
 RUN cmake -S . -B build-hip -DCMAKE_BUILD_TYPE=Release \

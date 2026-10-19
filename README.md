@@ -260,7 +260,7 @@ Compose accepts these environment overrides (or an ignored `.env` file):
 The image builds Strata from our fork,
 [UltimateBoomer/Strata](https://github.com/UltimateBoomer/Strata), at the commit
 in the `Containerfile`'s `STRATA_REVISION`: upstream
-[Niko1221/Strata](https://github.com/Niko1221/Strata) v0.1.45 plus the disk-backed
+[Niko1221/Strata](https://github.com/Niko1221/Strata) v0.2.0-beta plus the disk-backed
 conversation cache described above. To change the engine, push a commit to the fork and update
 `STRATA_REVISION` (or pass `--build-arg STRATA_REVISION=...`). The llama.cpp
 commit is the one that Strata revision pins in `third_party/ggml/VERSION.txt`.
