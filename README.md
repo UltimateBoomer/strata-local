@@ -88,6 +88,87 @@ Use your stored API key as a Bearer token and request model
 `qwen3.8-flash-next-q2_0`. The server also exposes `/v1/models`.
 `make down` preserves the model volume and credentials.
 
+### Switching models
+
+The image carries two engines, and `STRATA_MODEL` picks the model `make up`
+serves:
+
+```sh
+make up                          # Qwen3.8-Flash-Next, Q2_0 and IQ3_XXS variants (config/server.json)
+make up STRATA_MODEL=deepseek    # DeepSeek-V4.1-Flash IQ1_M (config/model-deepseek.json, config/server-deepseek.json)
+```
+
+Any other name selects `config/model-<name>.json` and `config/server-<name>.json`,
+linked as `/data/model-<name>` and `/data/pack-<name>`. Every model stays
+downloaded and packed, so switching back is quick. `make up` without the
+variable serves Qwen again; to keep another model across runs, set
+`STRATA_MODEL` in `mise.local.toml`. Only one model runs at a time: each takes
+the whole GPU and most of the RAM.
+
+#### Qwen variants
+
+The Qwen server holds two variants of the same model and switches between them
+while it runs (the fork's `"models"`, documented in Strata's
+`docs/BATCHING.md`). `config/server.json` is the common config; each variant
+adds its own pack and shards:
+
+| request `model` | variant | files |
+|---|---|---|
+| `qwen3.8-flash-next-q2_0`, `q2`, `qwen`, `qwen3.8-flash-next` | Q2_0 | `config/{model,server}-q2.json` |
+| `qwen3.8-flash-next-iq3_xxs`, `q3` | IQ3_XXS | `config/{model,server}-q3.json` |
+
+Another model name is served by whichever variant is loaded. A switch takes
+about as long as an engine start; the scheduler keeps a variant loaded while
+its requests are queued and switches once a request for the other has waited
+`model_max_wait_s` (120 s). There is no default variant: the server starts with
+`q2` (the first listed, or `STRATA_VARIANT`) and stays on whichever is loaded
+(`"default_model"` with `"default_idle_s"` would switch back to one when idle).
+The conversation in the engine is saved to `/data/sessions` when its variant is
+switched away and restored when it comes back; the parked conversations
+(`/data/convcache`) are not kept across a switch. `make up STRATA_VARIANT=q3`
+starts with IQ3_XXS, and `POST /v1/load {"model": "q3"}` switches by hand.
+`make init` downloads and packs every variant (IQ3_XXS: 76 GB more).
+
+The variants place their experts differently, because IQ3_XXS's experts do not
+fit in pc26's RAM beside the GPU's share (33 GB outside VRAM, against Q2_0's
+25 GB):
+
+| | Q2_0 | IQ3_XXS |
+|---|---|---|
+| GPU expert cache | 5760 experts (7.4 GiB) | 4300 (7.0 GiB) |
+| experts in RAM | 22 GiB budget (`--resident-budget-gib`) | 24 GiB budget |
+| the rest | read from the SSD unbuffered (`STRATA_UNBUFFERED_LOAD=1`) | the same |
+| prompt chunk | `auto` (8192) | `auto` (8192) |
+| prompt reading, 29-34K tokens | 987 tokens/s | 919 tokens/s |
+| answer speed | 43 tokens/s | 18-20 tokens/s |
+
+Measured on pc26 on 2026-10-25. IQ3_XXS with Q2_0's earlier settings (its whole
+remainder page-locked, the rest read through the page cache, 2048-token chunks)
+re-read the experts several times over per prompt chunk and read prompts at
+about 30 tokens/s. Q2_0 with every expert in RAM read 832 tokens/s with
+2048-token chunks and 1057 with 8192, but then left no RAM free for the picture
+reader and session saves; the 22 GiB budget keeps about 5 GB free. Larger
+budgets answer faster on IQ3_XXS (26 GiB: 25 tokens/s) but leave no RAM free.
+
+DeepSeek-V4.1-Flash (ISTA-DASLab's 1.75 bpw set, 81920 context) is upstream
+Strata's `strata-dsv41` engine, built here for gfx1101 although upstream ships
+it for gfx12 only (its kernel tests pass on gfx1101). It needs about 240 GB of
+disk: the shards, the 111 GB n-gram table read from the SSD while it answers,
+the DSpark drafter (left unloaded on this card) and a metadata shard of Unsloth's
+set. Its settings are upstream's tuned defaults: the tuner found nothing faster
+on pc26. Request model `deepseek-v4.1-flash`. Thinking is on by default
+(`reasoning_effort: "none"` turns it off). Measured on pc26 through the API on
+2026-10-25 against Qwen in its configuration (greedy, thinking off):
+
+| | DeepSeek IQ1_M | Qwen Q2_0 |
+|---|---|---|
+| answer speed | 4.4-5.7 tokens/s | 55-63 tokens/s |
+| prompt reading, 8K / 28K / 58K tokens | 147 / 220 / 235 tokens/s | 839 / 853 / 1140 tokens/s |
+| next turn of a 58K-token conversation | 9.5 s to the first token | 0.55 s |
+
+With 32 GB of RAM most of its 115 GB of experts are read from the SSD, so it
+is for occasional questions rather than agents.
+
 ### Remote host
 
 The same targets deploy to another machine's rootless Podman over SSH; no
@@ -175,7 +256,9 @@ Conversation parking is on disk, through our fork's `--conversation-cache-dir`
 volume, and restores it when a request continues it, avoiding repeated prompt
 processing (about 1 s instead of about 47 s for a 22K-token prompt). The K/V is
 streamed between the file and the GPU, so a restore holds only the running state
-and checkpoints in RAM; the default 2560 MiB free-RAM floor still applies, and a
+and checkpoints in RAM; `--conversation-cache-min-free-mib 1024` lowers the
+free-RAM floor from its 2560 MiB default (the locked experts leave only 2-3 GB free,
+so the default refused parking past about 70K tokens), and a
 conversation that cannot be parked or read back falls back to ordinary prompt
 processing. A conversation read back keeps its file, and parking it again updates
 that file in place: only the new K/V, the new checkpoints and the running state are
@@ -260,14 +343,17 @@ Compose accepts these environment overrides (or an ignored `.env` file):
 The image builds Strata from our fork,
 [UltimateBoomer/Strata](https://github.com/UltimateBoomer/Strata), at the commit
 in the `Containerfile`'s `STRATA_REVISION`: upstream
-[Niko1221/Strata](https://github.com/Niko1221/Strata) v0.2.0-beta plus the disk-backed
+[Niko1221/Strata](https://github.com/Niko1221/Strata) v0.2.2 plus the disk-backed
 conversation cache described above. To change the engine, push a commit to the fork and update
 `STRATA_REVISION` (or pass `--build-arg STRATA_REVISION=...`). The llama.cpp
 commit is the one that Strata revision pins in `third_party/ggml/VERSION.txt`.
 The ROCm 7.0.2 development image tag is not digest pinned.
 hipBLAS, rocBLAS and hipBLASLt development packages are
 installed inside the image; the base image's HIP compiler alone is insufficient
-for Strata's BLAS dependency. GPU containers disable SELinux label separation to permit
+for Strata's BLAS dependency. Another ROCm builds with
+`--build-arg ROCM_IMAGE=docker.io/rocm/dev-ubuntu-24.04:10.1.0-full --build-arg ROCM_DEV_PACKAGES=`
+(ROCm 10's `-full` images carry those packages already); it was measured slower here, see
+[hipBLASLt tuning](#hipblaslt-tuning). GPU containers disable SELinux label separation to permit
 device access and retain your supplementary groups; model storage is a named
 volume. `make logs` shows API and model-loading status. The full engine log is
 persisted at `/data/strata.log`; inspect it with
@@ -282,14 +368,50 @@ prepared model:
 make calibrate
 ```
 
-This stops the Strata server and runs upstream `tools/calibrate.py` against
-`config/server.json` in a temporary container with the same GPU and model mounts.
+This stops the Strata server and runs upstream `tools/calibrate.py` against the
+served model's run config (for the Qwen variants, `config/server.json` with the
+variant's own file over it: `STRATA_VARIANT`, default `q2`) in a temporary
+container with the same GPU and model mounts.
 Stop other GPU inference servers first. Calibration measures PCIe share, draft
 confidence, CPU worker count, and adaptive expert-cache settings; it can take
 15–30 minutes or longer. It prints recommended settings and measurements without
-editing the configuration. Apply the desired settings to `config/server.json`,
-then restart serving with `make up`.
+editing the configuration. Apply the desired settings to `config/server.json`
+(or the variant's file when they differ by variant), then restart serving with
+`make up`.
 The server stays stopped if calibration finishes or fails.
+
+### hipBLASLt tuning
+
+Strata reads a prompt's dense matrix products through hipBLASLt only with a tuning
+table for this GPU architecture and the image's exact hipBLASLt version; otherwise it
+falls back to plain hipBLAS. Upstream ships none for gfx1101, so
+`config/gfx1101-hipblaslt-100000.txt` (hipBLASLt 1.0.0, ROCm 7.0.2) was calibrated on
+pc26's RX 7800 XT and `STRATA_HIPBLASLT_TUNING` in `config/server.json` points at it.
+After changing the ROCm image or the card, regenerate it:
+
+```sh
+make tune
+```
+
+This stops the server, builds the image, and runs `tune_hipblaslt` over the 43 GEMM
+shapes of upstream's gfx1100 table, measuring every solution id on this card (about two
+minutes). It writes `config/<arch>-hipblaslt-<version>.txt`; point
+`STRATA_HIPBLASLT_TUNING` at that file and `make up`. The engine refuses a table for
+another version, logging it, and reads prompts on plain hipBLAS again.
+
+Measured on pc26 on 2026-10-20 (Q2_0, this configuration; medians of 2-3 fresh prompts
+after a warm-up; repeating the first arm at the end agreed within 0.6%):
+
+| Image | Prompt tok/s at 9K / 34K / 70K tokens | Decode tok/s |
+| --- | --- | --- |
+| ROCm 7.0.2 | 467 / 465 / 459 | 47-56 |
+| ROCm 7.0.2 + table | **816 / 813 / 796** | 49-54 |
+| ROCm 10.1.0 | 453 / 453 / 448 | 51-54 |
+| ROCm 10.1.0 + its table (hipBLASLt 1.4.1) | 768 / 768 / 754 | 50-55 |
+
+The table makes prompts about 1.75x faster with decode unchanged; ROCm 10.1.0 was
+2-6% slower than 7.0.2 with or without one, so the image stays on 7.0.2. The table costs
+the expert cache up to about 40 slots of VRAM (hipBLASLt's workspace).
 
 For a small sequential performance sample against a running server:
 

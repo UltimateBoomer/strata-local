@@ -84,17 +84,44 @@ class PreparationTests(unittest.TestCase):
     def test_native_config_uses_stable_artifact_paths(self):
         root = Path(__file__).parents[1]
         cfg = json.loads((root / 'config/server.json').read_text())
-        model = json.loads((root / 'config/model.json').read_text())
-        args = cfg['args']
-        self.assertGreaterEqual(cfg['parallel'], 1)
-        self.assertEqual(cfg['tokenizer'], '/data/pack/tokenizer')
-        self.assertEqual(args[args.index('--pack') + 1], '/data/pack')
-        # Strata finds PLE in the native shards; an alias would duplicate shard 2.
-        self.assertNotIn('--ple-gguf', args)
-        self.assertEqual(args[args.index('--native') + 1],
-                         '/data/model/' + Path(model['files'][0]).name)
-        self.assertEqual(cfg['vision']['mmproj'], '/data/model/' + model['vision_file'])
-        self.assertEqual(args[args.index('--max-context') + 1], str(cfg['max_context']))
+        self.assertNotIn('parallel', cfg, 'model variants run one request at a time')
+        self.assertEqual(cfg['tokenizer'], '/data/pack-q2/tokenizer', 'the variants share the tokenizer')
+        self.assertIn('--max-context', cfg['args'])
+        q2 = json.loads((root / 'config/model-q2.json').read_text())
+        self.assertEqual(cfg['vision']['mmproj'], '/data/model-q2/' + q2['vision_file'])
+        self.assertEqual(cfg['vision']['model'], '/data/model-q2/' + Path(q2['files'][0]).name)
+        for name, file in cfg['models'].items():
+            with self.subTest(variant=name):
+                variant = json.loads((root / 'config' / file).read_text())
+                model = json.loads((root / f'config/model-{name}.json').read_text())
+                init.model_files(model)
+                args = variant['args']
+                self.assertEqual(args[args.index('--pack') + 1], f'/data/pack-{name}')
+                # Strata finds PLE in the native shards; an alias would duplicate shard 2.
+                self.assertNotIn('--ple-gguf', args + cfg['args'])
+                self.assertEqual(args[args.index('--native') + 1],
+                                 f'/data/model-{name}/' + Path(model['files'][0]).name)
+                self.assertEqual(args[args.index('--mtp') + 1], f'/data/pack-{name}/mtp/rt')
+                # the model's own files and the expert placement its size needs (the GPU cache, the RAM copy,
+                # the prompt chunk) are per variant
+                for flag in ('--pack', '--native', '--mtp', '--expert-profile', '--expert-cache', '--prefill'):
+                    self.assertNotIn(flag, cfg['args'], 'set per variant')
+                for flag in ('--expert-cache', '--prefill'):
+                    self.assertIn(flag, args)
+                self.assertEqual(model['vision_file'], q2['vision_file'], 'the variants share the picture reader')
+
+    def test_variants_are_prepared_with_their_own_links(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'server.json').write_text(json.dumps({'models': {'q2': 'server-q2.json', 'q3': 'server-q3.json'}}))
+            (root / 'server-deepseek.json').write_text(json.dumps({'exe': 'x'}))
+
+            def path(kind, model):
+                return root / (f'{kind}.json' if model == 'qwen' else f'{kind}-{model}.json')
+            with patch.object(init, 'config_path', path):
+                self.assertEqual(init.models_to_prepare('qwen'),
+                                 [(root / 'model-q2.json', '-q2'), (root / 'model-q3.json', '-q3')])
+                self.assertEqual(init.models_to_prepare('deepseek'), [(root / 'model-deepseek.json', '-deepseek')])
 
     def test_generic_repository_resolves_revision_and_reuses_preparation(self):
         for files in (['single.gguf'], ['q/part1.gguf', 'q/part2.gguf', 'q/part3.gguf']):
@@ -194,6 +221,69 @@ class PreparationTests(unittest.TestCase):
         for files in ([], ['../model.gguf'], ['/model.gguf'], ['a/m.gguf', 'b/m.gguf'], ['manifest.json'], ['m.gguf.partial']):
             with self.subTest(files=files), self.assertRaises(ValueError):
                 init.model_files({'files': files})
+
+    def test_source_files_share_the_basename_checks(self):
+        with self.assertRaises(ValueError):
+            init.model_files({'files': ['m.gguf'], 'sources': [{'repository': 'o/r', 'files': ['q/m.gguf']}]})
+        with self.assertRaises(ValueError):
+            init.model_files({'files': ['m.gguf'], 'sources': [{'repository': 'o/r', 'files': []}]})
+
+    def test_sources_download_into_the_model_folder_at_their_revisions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = {'repository': 'owner/model', 'files': ['m.gguf'],
+                   'sources': [{'repository': 'other/drafter', 'revision': 'b' * 40, 'files': ['sub/d.gguf']}]}
+            def metadata(url, **kwargs):
+                sha, name = ('b' * 40, 'sub/d.gguf') if 'other/drafter' in url else ('a' * 40, 'm.gguf')
+                result = Mock()
+                result.json.return_value = {'sha': sha, 'siblings': [{'rfilename': name, 'lfs': {'size': 3, 'sha256': 'h'}}]}
+                return result
+            session = Mock()
+            session.get.side_effect = metadata
+            def downloaded(session, url, target, size, checksum):
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(b'abc')
+            with patch.object(init, 'DATA', Path(tmp)), patch.object(init, 'download', side_effect=downloaded) as download:
+                init.initialize(cfg, session, '-ds')
+            urls = [call.args[1] for call in download.call_args_list]
+            self.assertEqual(urls, ['https://huggingface.co/owner/model/resolve/' + 'a' * 40 + '/m.gguf',
+                                    'https://huggingface.co/other/drafter/resolve/' + 'b' * 40 + '/sub/d.gguf'])
+            # another model's links leave the default model's alone
+            self.assertTrue((Path(tmp) / 'model-ds' / 'd.gguf').exists())
+            self.assertTrue((Path(tmp) / 'pack-ds' / '.complete').exists())
+            self.assertFalse((Path(tmp) / 'model').exists() or (Path(tmp) / 'pack').exists())
+
+    def test_tools_may_be_in_subfolders_but_not_outside(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(init, 'tool') as tool:
+                init.prepare({'files': ['m.gguf'], 'prepare': [['dsv41/pack_gguf.py']]}, Path(tmp), Path(tmp) / 'p1')
+                tool.assert_called_once_with('dsv41/pack_gguf.py')
+                for name in ('../evil.py', '/tmp/evil.py', 'dsv41/run.sh'):
+                    with self.subTest(name=name), self.assertRaises(ValueError):
+                        init.prepare({'files': ['m.gguf'], 'prepare': [[name]]}, Path(tmp), Path(tmp) / name.replace('/', '_'))
+
+    def test_model_selection_picks_the_config_pair(self):
+        self.assertEqual(init.config_path('model', 'qwen'), Path('/config/model.json'))
+        self.assertEqual(init.config_path('model', 'deepseek'), Path('/config/model-deepseek.json'))
+        for bad in ('', '../x', 'Deep', 'a/b'):
+            with self.subTest(model=bad), self.assertRaises(SystemExit):
+                init.config_path('server', bad)
+
+    def test_deepseek_config_uses_stable_artifact_paths(self):
+        root = Path(__file__).parents[1]
+        cfg = json.loads((root / 'config/server-deepseek.json').read_text())
+        model = json.loads((root / 'config/model-deepseek.json').read_text())
+        init.model_files(model)
+        args = cfg['args']
+        self.assertEqual(cfg['tokenizer'], '/data/pack-deepseek/tokenizer')
+        self.assertEqual(args[args.index('--pack') + 1], '/data/pack-deepseek')
+        self.assertIn('--max-context', args)
+        # the pack names every downloaded shard; the model files are all in one folder
+        pack = model['prepare'][0]
+        shards = pack[pack.index('--shards') + 1:pack.index('--engram')]
+        self.assertEqual(shards, [f for f in model['files'] if '-of-' in f])
+        names = {Path(f).name for f in model['files'] + model['sources'][0]['files']}
+        for flag in ('--engram', '--engram-meta', '--dspark-gguf'):
+            self.assertIn(pack[pack.index(flag) + 1].removeprefix('{model}/'), names)
 
 
 if __name__ == '__main__':

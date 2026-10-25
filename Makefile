@@ -1,7 +1,13 @@
 .DEFAULT_GOAL := up
 COMPOSE ?= podman compose
+# The served model: qwen (config/server.json: the Qwen variants it lists, each config/{model,server}-<variant>.json) or
+# another config/{model,server}-<name>.json pair. STRATA_VARIANT picks the Qwen variant to start with (default_model).
+STRATA_MODEL ?= qwen
+export STRATA_MODEL
+STRATA_VARIANT ?=
+export STRATA_VARIANT
 
-.PHONY: set-api-key set-hf-token migrate-keyring-secrets secrets config build init ports up down logs calibrate check
+.PHONY: set-api-key set-hf-token migrate-keyring-secrets secrets config build init ports up down logs calibrate tune check
 set-api-key:
 	./scripts/credentials.sh store strata_api_key
 set-hf-token:
@@ -28,7 +34,16 @@ logs:
 	$(COMPOSE) logs -f strata-server
 calibrate:
 	$(COMPOSE) stop strata-server
-	$(COMPOSE) run --rm --no-deps -T --entrypoint python strata-server /opt/strata/tools/calibrate.py /config/server.json
+	$(COMPOSE) run --rm --no-deps -T --entrypoint python strata-server /usr/local/lib/strata-local/calibrate.py
+# Calibrate a hipBLASLt table for this card and the image's hipBLASLt, over the 43 rows of upstream's gfx1100 1.4.1
+# table (solution ids measured fresh); writes config/<arch>-hipblaslt-<version>.txt. Point
+# STRATA_HIPBLASLT_TUNING in config/server.json at it, then make up.
+tune: build
+	$(COMPOSE) stop strata-server
+	$(COMPOSE) run --rm --no-deps -T --entrypoint sh strata-server /usr/local/lib/strata-local/tune-hipblaslt.sh \
+		> config/.hipblaslt-table.tmp
+	name=$$(awk 'NR == 2 && $$1 == "STRATA_HIPBLASLT_TUNING_V1" {print $$2 "-hipblaslt-" $$3 ".txt"}' config/.hipblaslt-table.tmp) \
+		&& test -n "$$name" && mv config/.hipblaslt-table.tmp "config/$$name" && echo "wrote config/$$name"
 check:
 	python3 -m unittest discover -s tests -v
 	sh -n scripts/credentials.sh scripts/register-podman-secrets.sh scripts/podman-secret-driver.sh

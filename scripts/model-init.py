@@ -63,6 +63,11 @@ def model_files(cfg):
     files = list(cfg['files'])
     if cfg.get('vision_file'):
         files.append(cfg['vision_file'])
+    for source in cfg.get('sources', []):
+        if (not isinstance(source.get('repository'), str) or not isinstance(source.get('files'), list) or not source['files']
+                or not all(isinstance(f, str) for f in source['files'])):
+            raise ValueError('Each source needs a repository and a nonempty list of filenames')
+        files.extend(source['files'])
     if not files:
         raise ValueError('At least one model file is required')
     names = set()
@@ -88,8 +93,9 @@ def prepare(cfg, folder, pack):
         if not isinstance(command, list) or not command or not all(isinstance(arg, str) for arg in command):
             raise ValueError('Each prepare command must be a nonempty list of strings')
         name, *args = [arg.format_map(values) for arg in command]
-        if Path(name).name != name or not name.endswith('.py'):
-            raise ValueError('Preparation tools must be Python filenames in Strata tools/')
+        path = Path(name)
+        if path.is_absolute() or '..' in path.parts or not name.endswith('.py'):
+            raise ValueError('Preparation tools must be Python files under Strata tools/')
         tool(name, *args)
     for copy in cfg.get('copies', []):
         source = Path(copy['source'].format_map(values))
@@ -121,12 +127,9 @@ def reuse_cached_file(target, filename, info):
             return
 
 
-def initialize(cfg, session):
-    files = model_files(cfg)
-    revision = cfg.get('revision', 'main')
-    base = f"https://huggingface.co/{quote(cfg['repository'], safe='/')}"
+def resolve(session, repository, revision):
     response = session.get(
-        f"https://huggingface.co/api/models/{quote(cfg['repository'], safe='/')}/revision/{quote(revision, safe='')}",
+        f"https://huggingface.co/api/models/{quote(repository, safe='/')}/revision/{quote(revision, safe='')}",
         params={'blobs': 'true'}, timeout=60)
     response.raise_for_status()
     metadata = response.json()
@@ -135,15 +138,11 @@ def initialize(cfg, session):
         raise RuntimeError('Hugging Face returned an invalid revision')
     if re.fullmatch(r'[0-9a-f]{40}', revision) and resolved != revision:
         raise RuntimeError('Hugging Face returned a different revision')
-    # Preserve the original download-cache key. Preparation and projector changes
-    # must not invalidate already downloaded model shards.
-    identity = hashlib.sha256(json.dumps({
-        'repository': cfg['repository'], 'revision': resolved, 'files': cfg['files'],
-    }, sort_keys=True).encode()).hexdigest()[:16]
-    preparation_identity = hashlib.sha256(json.dumps(
-        {**cfg, 'revision': resolved}, sort_keys=True).encode()).hexdigest()[:16]
-    folder = DATA / 'models' / identity
-    pack = DATA / 'packs' / preparation_identity
+    return metadata
+
+
+def fetch(session, repository, metadata, files, folder):
+    base = f"https://huggingface.co/{quote(repository, safe='/')}"
     entries = {item['rfilename']: item for item in metadata['siblings']}
     for filename in files:
         if filename not in entries:
@@ -153,11 +152,35 @@ def initialize(cfg, session):
             raise ValueError(f'Model file requires LFS size and SHA-256 metadata: {filename}')
         target = folder / Path(filename).name
         reuse_cached_file(target, filename, info)
-        download(session, f"{base}/resolve/{resolved}/{quote(filename, safe='/')}",
+        download(session, f"{base}/resolve/{metadata['sha']}/{quote(filename, safe='/')}",
                  target, info['size'], info['sha256'])
+
+
+def initialize(cfg, session, suffix=''):
+    model_files(cfg)
+    metadata = resolve(session, cfg['repository'], cfg.get('revision', 'main'))
+    resolved = metadata['sha']
+    # Files from other repositories (a drafter, a metadata shard) land in the same folder.
+    sources = [(s, resolve(session, s['repository'], s.get('revision', 'main'))) for s in cfg.get('sources', [])]
+    # Preserve the original download-cache key. Preparation and projector changes
+    # must not invalidate already downloaded model shards.
+    key = {'repository': cfg['repository'], 'revision': resolved, 'files': cfg['files']}
+    if sources:
+        key['sources'] = [{'repository': s['repository'], 'revision': m['sha'], 'files': s['files']} for s, m in sources]
+    identity = hashlib.sha256(json.dumps(key, sort_keys=True).encode()).hexdigest()[:16]
+    preparation_identity = hashlib.sha256(json.dumps(
+        {**cfg, 'revision': resolved}, sort_keys=True).encode()).hexdigest()[:16]
+    folder = DATA / 'models' / identity
+    pack = DATA / 'packs' / preparation_identity
+    fetch(session, cfg['repository'], metadata, cfg['files'] + ([cfg['vision_file']] if cfg.get('vision_file') else []), folder)
+    for source, source_metadata in sources:
+        fetch(session, source['repository'], source_metadata, source['files'], folder)
     (folder / 'manifest.json').write_text(json.dumps(metadata, indent=2) + '\n')
     prepare(cfg, folder, pack)
-    for name, target in (('model', folder), ('pack', pack)):
+    # Each model has its own links (the default model /data/model and /data/pack, another /data/model-<name> and
+    # /data/pack-<name>): an engine still running another model never writes through them (DeepSeek saves its
+    # expert profile into its pack when it stops).
+    for name, target in (('model' + suffix, folder), ('pack' + suffix, pack)):
         link = DATA / name
         temporary = DATA / (name + '.tmp')
         temporary.unlink(missing_ok=True)
@@ -166,14 +189,37 @@ def initialize(cfg, session):
     print('Strata model artifacts ready.', flush=True)
 
 
+def config_path(kind, model):
+    """The default model (qwen) uses /config/<kind>.json; another uses /config/<kind>-<model>.json."""
+    if not re.fullmatch(r'[a-z0-9][a-z0-9_-]*', model):
+        raise SystemExit(f'Invalid STRATA_MODEL: {model!r}')
+    return Path('/config') / (f'{kind}.json' if model == 'qwen' else f'{kind}-{model}.json')
+
+
+def models_to_prepare(model):
+    """(model config, link suffix) pairs for STRATA_MODEL: a server config with "models" (Strata's model variants)
+    prepares each variant from /config/model-<variant>.json, linked as /data/{model,pack}-<variant>; else the model's
+    own config."""
+    server = config_path('server', model)
+    variants = json.loads(server.read_text()).get('models') if server.is_file() else None
+    names = list(variants) if variants else [model]
+    return [(config_path('model', n), '' if n == 'qwen' else '-' + n) for n in names]
+
+
 def main():
-    cfg = json.loads(Path('/config/model.json').read_text())
+    model = os.environ.get('STRATA_MODEL', 'qwen')
+    todo = models_to_prepare(model)
+    for path, _ in todo:
+        if not path.is_file():
+            raise SystemExit(f'Missing model config {path} for STRATA_MODEL={model}.')
     with requests.Session() as session:
         token_file = Path('/run/secrets/hf_token')
         token = token_file.read_text().strip() if token_file.exists() else ''
         if token:
             session.headers['Authorization'] = f'Bearer {token}'
-        initialize(cfg, session)
+        for path, suffix in todo:
+            print(f'Preparing {path.name}', flush=True)
+            initialize(json.loads(path.read_text()), session, suffix)
 
 
 if __name__ == '__main__':

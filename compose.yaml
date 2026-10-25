@@ -22,6 +22,7 @@ services:
     restart: "no"
     entrypoint: [python, /usr/local/lib/strata-local/model-init.py]
     environment:
+      STRATA_MODEL: "${STRATA_MODEL:-qwen}"
       STRATA_VERIFY_EXISTING: "${STRATA_VERIFY_EXISTING:-0}"
     secrets:
       - source: strata-local-hf-token
@@ -45,6 +46,9 @@ services:
     ports:
       - "${STRATA_BIND_ADDRESS:-127.0.0.1}:${STRATA_PORT:-9931}:8080"
     environment:
+      STRATA_MODEL: "${STRATA_MODEL:-qwen}"
+      # With model variants (config/server.json "models"): the one to start with; empty = its default_model
+      STRATA_VARIANT: "${STRATA_VARIANT:-}"
       HIP_VISIBLE_DEVICES: "${STRATA_GPU:-0}"
     secrets:
       - source: strata-local-api-key

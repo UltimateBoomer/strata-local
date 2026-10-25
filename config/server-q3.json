@@ -1,0 +1,22 @@
+{
+  "model_name": "qwen3.8-flash-next-iq3_xxs",
+  "args": [
+    "--pack",
+    "/data/pack-q3",
+    "--native",
+    "/data/model-q3/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+    "--expert-profile",
+    "/data/pack-q3/expert-profile.bin",
+    "--mtp",
+    "/data/pack-q3/mtp/rt",
+    "--expert-cache",
+    "4300",
+    "--resident-budget-gib",
+    "24",
+    "--prefill",
+    "auto"
+  ],
+  "env": {
+    "STRATA_UNBUFFERED_LOAD": "1"
+  }
+}

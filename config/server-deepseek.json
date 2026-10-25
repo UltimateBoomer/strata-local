@@ -1,0 +1,22 @@
+{
+  "exe": "/opt/strata/engine/strata-dsv41",
+  "cwd": "/opt/strata",
+  "tokenizer": "/data/pack-deepseek/tokenizer",
+  "model_name": "deepseek-v4.1-flash",
+  "arch": "deepseek41",
+  "backend": "hip",
+  "log": "/data/strata-deepseek.log",
+  "engine_ready_s": 3600,
+  "args": [
+    "--pack",
+    "/data/pack-deepseek",
+    "--max-context",
+    "81920",
+    "--eos",
+    "1",
+    "--dspark",
+    "auto",
+    "--dspark-conf",
+    "0.65"
+  ]
+}
