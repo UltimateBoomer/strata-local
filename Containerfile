@@ -1,9 +1,9 @@
 ARG ROCM_IMAGE=docker.io/rocm/dev-ubuntu-24.04:7.0.2
 FROM $ROCM_IMAGE
 
-# Our fork of Niko1221/Strata: upstream v0.2.4.2 plus the disk-backed conversation cache (park files updated in place, read back by streaming, borrowed from), the turn slice (a conversation keeps the engine between its tool calls) and request priorities (fair share in bands, preemption) and model variants (one server switches between quantizations of one model).
+# Our fork of Niko1221/Strata: upstream v0.2.4.2 plus the disk-backed conversation cache (park files updated in place, read back by streaming, borrowed from), the turn slice (a conversation keeps the engine between its tool calls) and request priorities (fair share in bands, preemption) and model variants (one server switches between quantizations of one model) and load images (a variant's expert load kept in load order on disk, read sequentially).
 ARG STRATA_REPOSITORY=https://github.com/UltimateBoomer/Strata.git
-ARG STRATA_REVISION=253e893919c0d46da0fa61f5826424cb437886be
+ARG STRATA_REVISION=160bf7571db88ed09be83509dcedfe2d8df8067e
 ARG HIP_ARCHITECTURES=gfx1101
 ARG BUILD_JOBS=8
 # Use the llama.cpp revision pinned by the selected Strata checkout.

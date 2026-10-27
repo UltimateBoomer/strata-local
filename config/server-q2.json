@@ -21,6 +21,7 @@
     "auto"
   ],
   "env": {
-    "STRATA_UNBUFFERED_LOAD": "1"
+    "STRATA_UNBUFFERED_LOAD": "1",
+    "STRATA_LOAD_IMAGE": "/data/load-image/q2"
   }
 }

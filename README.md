@@ -21,9 +21,10 @@ See [supported models](https://github.com/Niko1221/Strata/blob/main/docs/MODELS.
   and writable by everyone, the default on current Fedora (`ls -l` shows
   `crw-rw-rw-`). Supplementary groups such as `render` do not reach rootless
   containers, so group-only access is not enough.
-- About 48 GB RAM, 16 GB VRAM and **at least 140 GB free SSD space**, plus
+- About 48 GB RAM, 16 GB VRAM and **at least 200 GB free SSD space**, plus
   space for the ROCm build image. The two GGUFs total about 66.4 GB; packing
-  duplicates the expert weights; MTP needs downloaded and prepared copies.
+  duplicates the expert weights; MTP needs downloaded and prepared copies; each
+  variant's load image takes about 30 GB more.
 - Outbound GitHub/Hugging Face/package registry access. No Strata or ROCm host installation is required.
 - A host hard memlock limit that permits unlimited locking. Rootless Podman
   cannot raise a host hard limit; check `ulimit -Hl` if container creation fails.
@@ -118,7 +119,7 @@ adds its own pack and shards:
 | `qwen3.8-flash-next-iq3_xxs`, `q3` | IQ3_XXS | `config/{model,server}-q3.json` |
 
 Another model name is served by whichever variant is loaded. A switch takes
-about as long as an engine start; the scheduler keeps a variant loaded while
+about as long as an engine start, about 8 s with load images (below); the scheduler keeps a variant loaded while
 its requests are queued and switches once a request for the other has waited
 `model_max_wait_s` (120 s). There is no default variant: the server starts with
 `q2` (the first listed, or `STRATA_VARIANT`) and stays on whichever is loaded
@@ -128,6 +129,14 @@ switched away and restored when it comes back; the parked conversations
 (`/data/convcache`) are not kept across a switch. `make up STRATA_VARIANT=q3`
 starts with IQ3_XXS, and `POST /v1/load {"model": "q3"}` switches by hand.
 `make init` downloads and packs every variant (IQ3_XXS: 76 GB more).
+
+Each variant keeps a load image in `/data/load-image/<variant>` (the fork's
+`STRATA_LOAD_IMAGE`): its GPU expert cache and RAM experts as two files in the
+order the engine loads them, so a start reads them sequentially instead of
+expert by expert. On pc26 an IQ3_XXS start went from 21.7 s to 8.4 s. The first
+start of a variant writes them (about 9 s more), as does any start after a
+change to its expert profile, `--expert-cache` or `--resident-budget-gib`; they
+take about 30 GB per variant.
 
 The variants place their experts differently, because IQ3_XXS's experts do not
 fit in pc26's RAM beside the GPU's share (33 GB outside VRAM, against Q2_0's
