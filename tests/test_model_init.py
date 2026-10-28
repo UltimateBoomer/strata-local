@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -10,6 +11,13 @@ from unittest.mock import Mock, patch
 spec = importlib.util.spec_from_file_location('model_init', Path(__file__).parents[1] / 'scripts/model-init.py')
 init = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(init)
+sys.path.insert(0, str(Path(__file__).parents[1] / 'scripts'))
+import engine_config  # noqa: E402
+
+
+def server_config(path):
+    """A server config as Strata reads it: its "engine" fields as "args" (engine_config.py)."""
+    return engine_config.expand(json.loads(path.read_text()))
 
 
 class PreparationTests(unittest.TestCase):
@@ -83,7 +91,7 @@ class PreparationTests(unittest.TestCase):
 
     def test_native_config_uses_stable_artifact_paths(self):
         root = Path(__file__).parents[1]
-        cfg = json.loads((root / 'config/server.json').read_text())
+        cfg = server_config(root / 'config/server.json')
         self.assertNotIn('parallel', cfg, 'model variants run one request at a time')
         self.assertEqual(cfg['tokenizer'], '/data/pack-q2/tokenizer', 'the variants share the tokenizer')
         self.assertIn('--max-context', cfg['args'])
@@ -92,7 +100,7 @@ class PreparationTests(unittest.TestCase):
         self.assertEqual(cfg['vision']['model'], '/data/model-q2/' + Path(q2['files'][0]).name)
         for name, file in cfg['models'].items():
             with self.subTest(variant=name):
-                variant = json.loads((root / 'config' / file).read_text())
+                variant = server_config(root / 'config' / file)
                 model = json.loads((root / f'config/model-{name}.json').read_text())
                 init.model_files(model)
                 args = variant['args']
@@ -195,6 +203,19 @@ class PreparationTests(unittest.TestCase):
                 if reused:
                     self.assertEqual(target.stat().st_ino, source.stat().st_ino)
 
+    def test_cache_file_reused_under_another_name(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(init, 'DATA', Path(tmp)):
+            old = Path(tmp) / 'models' / 'q2'
+            old.mkdir(parents=True)
+            source = old / 'Q2_0-00002.gguf'
+            source.write_bytes(b'abc')
+            (old / 'manifest.json').write_text(json.dumps({'siblings': [
+                {'rfilename': 'Q2_0/Q2_0-00002.gguf', 'lfs': {'sha256': 'expected'}},
+                {'rfilename': 'IQ3_XXS/IQ3_XXS-00002.gguf', 'lfs': {'sha256': 'expected'}}]}))
+            target = Path(tmp) / 'models' / 'coder' / 'IQ1_M-00002.gguf'
+            init.reuse_cached_file(target, 'IQ1_M/IQ1_M-00002.gguf', {'sha256': 'expected', 'size': 3})
+            self.assertEqual(target.stat().st_ino, source.stat().st_ino)
+
     @patch.dict(os.environ, {'STRATA_VERIFY_EXISTING': '1'})
     def test_recovered_cache_file_still_obeys_verification_opt_in(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(init, 'DATA', Path(tmp)):
@@ -270,7 +291,7 @@ class PreparationTests(unittest.TestCase):
 
     def test_deepseek_config_uses_stable_artifact_paths(self):
         root = Path(__file__).parents[1]
-        cfg = json.loads((root / 'config/server-deepseek.json').read_text())
+        cfg = server_config(root / 'config/server-deepseek.json')
         model = json.loads((root / 'config/model-deepseek.json').read_text())
         init.model_files(model)
         args = cfg['args']

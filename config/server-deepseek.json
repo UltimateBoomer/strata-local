@@ -7,16 +7,17 @@
   "backend": "hip",
   "log": "/data/strata-deepseek.log",
   "engine_ready_s": 3600,
-  "args": [
-    "--pack",
-    "/data/pack-deepseek",
-    "--max-context",
-    "81920",
-    "--eos",
-    "1",
-    "--dspark",
-    "auto",
-    "--dspark-conf",
-    "0.65"
-  ]
+  "engine_env": {
+    "ds4_hipk": 1
+  },
+  "env": {
+    "DS4_FAST_ATTN": "1"
+  },
+  "engine": {
+    "pack": "/data/pack-deepseek",
+    "max_context": 81920,
+    "eos": 1,
+    "dspark": "auto",
+    "dspark_conf": 0.65
+  }
 }

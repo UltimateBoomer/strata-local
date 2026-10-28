@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 import sys
 
+import engine_config
+
 sys.path.insert(0, '/opt/strata')
 from serve import models  # noqa: E402
 
@@ -13,6 +15,7 @@ def main():
     # else the first) is put together the way the server does.
     model = os.environ.get('STRATA_MODEL', 'qwen')
     path = Path('/config/server.json' if model == 'qwen' else f'/config/server-{model}.json')
+    path = engine_config.materialize(path, Path('/tmp/strata-config'))
     cfg = json.loads(path.read_text())
     if cfg.get('models'):
         _, cfg = models.load(cfg, str(path), os.environ.get('STRATA_VARIANT') or None)

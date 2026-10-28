@@ -37,7 +37,7 @@ calibrate:
 	$(COMPOSE) run --rm --no-deps -T --entrypoint python strata-server /usr/local/lib/strata-local/calibrate.py
 # Calibrate a hipBLASLt table for this card and the image's hipBLASLt, over the 43 rows of upstream's gfx1100 1.4.1
 # table (solution ids measured fresh); writes config/<arch>-hipblaslt-<version>.txt. Point
-# STRATA_HIPBLASLT_TUNING in config/server.json at it, then make up.
+# engine_env.hipblaslt_tuning (STRATA_HIPBLASLT_TUNING) in config/server.json at it, then make up.
 tune: build
 	$(COMPOSE) stop strata-server
 	$(COMPOSE) run --rm --no-deps -T --entrypoint sh strata-server /usr/local/lib/strata-local/tune-hipblaslt.sh \

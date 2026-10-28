@@ -7,7 +7,7 @@ x-runtime: &runtime
     dockerfile: Containerfile
     args:
       HIP_ARCHITECTURES: "${HIP_ARCHITECTURES:-gfx1101}"
-      BUILD_JOBS: "${BUILD_JOBS:-2}"
+      BUILD_JOBS: "${BUILD_JOBS:-8}"
   platform: linux/amd64
   # A file log, not journald: a rootless system user (UID < 1000) cannot read its containers' journald entries.
   logging:
@@ -31,6 +31,9 @@ services:
   strata-server:
     <<: *runtime
     restart: unless-stopped
+    # The engine parks the conversation it holds as it stops (kept for the next start); the server allows it 20 s
+    # before terminating it, so the 10 s default would kill it first.
+    stop_grace_period: 60s
     depends_on:
       model-init:
         condition: service_completed_successfully

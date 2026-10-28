@@ -1,0 +1,20 @@
+{
+  "model_name": "qwen3.8-flash-next-coder-iq1_m",
+  "aliases": [
+    "coder",
+    "qwen3.8-flash-next-coder"
+  ],
+  "engine_env": {
+    "unbuffered_load": true,
+    "load_image": "/data/load-image/q1"
+  },
+  "engine": {
+    "pack": "/data/pack-q1",
+    "native": "/data/model-q1/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf",
+    "expert_profile": "/data/pack-q1/expert-profile.bin",
+    "mtp": "/data/pack-q1/mtp/rt",
+    "expert_cache": 3524,
+    "resident_budget_gib": 21,
+    "prefill": "auto"
+  }
+}

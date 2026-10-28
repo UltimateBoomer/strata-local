@@ -1,9 +1,9 @@
 ARG ROCM_IMAGE=docker.io/rocm/dev-ubuntu-24.04:7.0.2
 FROM $ROCM_IMAGE
 
-# Our fork of Niko1221/Strata: upstream v0.2.4.2 plus the disk-backed conversation cache (park files updated in place, read back by streaming, borrowed from), the turn slice (a conversation keeps the engine between its tool calls) and request priorities (fair share in bands, preemption) and model variants (one server switches between quantizations of one model) and load images (a variant's expert load kept in load order on disk, read sequentially).
+# Our fork of Niko1221/Strata: upstream v0.2.7 plus the disk-backed conversation cache (park files updated in place, read back by streaming, borrowed from), the turn slice (a conversation keeps the engine between its tool calls) and request priorities (fair share in bands, preemption) and model variants (one server switches between quantizations of one model) and load images (a variant's expert load kept in load order on disk, read sequentially) and sessions (a request names its conversation; only sessions' turns are parked, a client yields and drops by request) and parked conversations kept across restarts and variant switches (one budget for every variant's files).
 ARG STRATA_REPOSITORY=https://github.com/UltimateBoomer/Strata.git
-ARG STRATA_REVISION=160bf7571db88ed09be83509dcedfe2d8df8067e
+ARG STRATA_REVISION=dd327505f0811eee5c28d88cd0831f838fac13b4
 ARG HIP_ARCHITECTURES=gfx1101
 ARG BUILD_JOBS=8
 # Use the llama.cpp revision pinned by the selected Strata checkout.
@@ -59,5 +59,5 @@ RUN cmake -S tools/vision -B build-vision -DCMAKE_BUILD_TYPE=Release \
 # The engine has no RUNPATH; ROCm 10's images, unlike ROCm 7's, do not register /opt/rocm/lib with the loader.
 RUN echo /opt/rocm/lib > /etc/ld.so.conf.d/zz-strata-rocm.conf && ldconfig \
     && ldd engine/strata engine/strata-dsv41 | (! grep 'not found')
-COPY scripts/model-init.py scripts/serve.py scripts/calibrate.py scripts/tune-hipblaslt.sh /usr/local/lib/strata-local/
+COPY scripts/model-init.py scripts/engine_config.py scripts/serve.py scripts/calibrate.py scripts/tune-hipblaslt.sh /usr/local/lib/strata-local/
 ENTRYPOINT ["python", "/usr/local/lib/strata-local/serve.py"]

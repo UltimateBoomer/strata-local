@@ -106,7 +106,8 @@ def prepare(cfg, folder, pack):
 
 
 def reuse_cached_file(target, filename, info):
-    """Recover downloads from older cache layouts without copying large files."""
+    """Link a file another model folder already holds (an older cache layout, or the same blob under another name:
+    the Coder's shard 2 is Q2_0's) without copying large files."""
     if target.exists():
         return
     for candidate in sorted((DATA / 'models').glob('*/manifest.json')):
@@ -116,15 +117,15 @@ def reuse_cached_file(target, filename, info):
             metadata = json.loads(candidate.read_text())
         except (OSError, ValueError):
             continue
-        matching = any(entry.get('rfilename') == filename and
-                       entry.get('lfs', {}).get('sha256') == info['sha256']
-                       for entry in metadata.get('siblings', []))
-        source = candidate.parent / Path(filename).name
-        if matching and source.is_file() and source.stat().st_size == info['size']:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.hardlink_to(source)
-            print(f'Reusing cached {target.name} from {candidate.parent.name}', flush=True)
-            return
+        for entry in metadata.get('siblings', []):
+            if entry.get('lfs', {}).get('sha256') != info['sha256'] or not entry.get('rfilename'):
+                continue
+            source = candidate.parent / Path(entry['rfilename']).name
+            if source.is_file() and source.stat().st_size == info['size']:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.hardlink_to(source)
+                print(f'Reusing cached {target.name} from {candidate.parent.name}/{source.name}', flush=True)
+                return
 
 
 def resolve(session, repository, revision):

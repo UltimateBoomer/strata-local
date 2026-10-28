@@ -95,7 +95,7 @@ The image carries two engines, and `STRATA_MODEL` picks the model `make up`
 serves:
 
 ```sh
-make up                          # Qwen3.8-Flash-Next, Q2_0 and IQ3_XXS variants (config/server.json)
+make up                          # Qwen3.8-Flash-Next, Q2_0, IQ3_XXS and Coder IQ1_M variants (config/server.json)
 make up STRATA_MODEL=deepseek    # DeepSeek-V4.1-Flash IQ1_M (config/model-deepseek.json, config/server-deepseek.json)
 ```
 
@@ -108,7 +108,7 @@ the whole GPU and most of the RAM.
 
 #### Qwen variants
 
-The Qwen server holds two variants of the same model and switches between them
+The Qwen server holds three variants of the same model and switches between them
 while it runs (the fork's `"models"`, documented in Strata's
 `docs/BATCHING.md`). `config/server.json` is the common config; each variant
 adds its own pack and shards:
@@ -117,18 +117,26 @@ adds its own pack and shards:
 |---|---|---|
 | `qwen3.8-flash-next-q2_0`, `q2`, `qwen`, `qwen3.8-flash-next` | Q2_0 | `config/{model,server}-q2.json` |
 | `qwen3.8-flash-next-iq3_xxs`, `q3` | IQ3_XXS | `config/{model,server}-q3.json` |
+| `qwen3.8-flash-next-coder-iq1_m`, `q1`, `coder`, `qwen3.8-flash-next-coder` | Coder IQ1_M | `config/{model,server}-q1.json` |
+
+The Coder is ISTA-DASLab's expert-pruned release: 256 of each layer's 512 experts
+kept (chosen for code, tool use and pictures), stored at 3.5 bits, with upstream's
+Coder expert profile. Its shard 2 (the n-gram table) is the same file as Q2_0's
+and is hard-linked from it, so it downloads only its 29.6 GB shard 1.
 
 Another model name is served by whichever variant is loaded. A switch takes
 about as long as an engine start, about 8 s with load images (below); the scheduler keeps a variant loaded while
-its requests are queued and switches once a request for the other has waited
+its requests are queued and switches once a request for another has waited
 `model_max_wait_s` (120 s). There is no default variant: the server starts with
 `q2` (the first listed, or `STRATA_VARIANT`) and stays on whichever is loaded
 (`"default_model"` with `"default_idle_s"` would switch back to one when idle).
-The conversation in the engine is saved to `/data/sessions` when its variant is
-switched away and restored when it comes back; the parked conversations
-(`/data/convcache`) are not kept across a switch. `make up STRATA_VARIANT=q3`
+Each variant parks its conversations in its own folder, `/data/convcache/<variant>`
+(the server derives them from the common `/data/convcache`), and they survive a
+switch: the outgoing engine parks the conversation it holds as it stops, and the
+variant's next request goes on from that file. No session file is written
+(`"model_session_dir": false`). `make up STRATA_VARIANT=q3`
 starts with IQ3_XXS, and `POST /v1/load {"model": "q3"}` switches by hand.
-`make init` downloads and packs every variant (IQ3_XXS: 76 GB more).
+`make init` downloads and packs every variant (IQ3_XXS: 76 GB more, the Coder: 29.6 GB more).
 
 Each variant keeps a load image in `/data/load-image/<variant>` (the fork's
 `STRATA_LOAD_IMAGE`): its GPU expert cache and RAM experts as two files in the
@@ -233,7 +241,7 @@ server session. CPU encoding adds latency on the first use of an image.
 In `config/server.json`, `vision.threads` controls encoder threads (default 8); `vision.max_tokens`
 controls image resolution through its token budget (default 300, matching
 upstream's CPU setting). Increase the image budget if small text or fine detail
-is lost, at the cost of CPU time and context usage. For text-only serving, remove the `vision` object and `--vision` from `args`.
+is lost, at the cost of CPU time and context usage. For text-only serving, remove the `vision` object and `engine.vision`.
 Optionally remove `vision_file` from `config/model.json` to skip the projector
 download. Re-run `make up` after changing these settings.
 
@@ -244,13 +252,33 @@ and is imported with `config/model.json` into the `strata-local-config`
 volume mounted read-only at `/config` (`make config`; `make up` runs it).
 Importing overwrites both files but leaves files deleted from `config/` in the
 volume; run `podman volume rm strata-local-config` with the containers removed
-to clear them. The initializer does not
-rewrite it or translate settings into engine arguments. Engine options belong
-in the native `args` array: `--prefill`, `--pool-workers`, `--vram-reserve-mib`,
-and `--adapt-every` can be edited there. `--adapt-every` is currently `0`
-(disabled); `1` adapts every decoding round. Keep top-level `max_context` and
-`--max-context` in `args` consistent. Contexts above 262144 require explicit
-rope scaling configured in Strata.
+to clear them.
+
+Engine options are fields of the `engine` object rather than an argv list: each
+key is an option without its dashes, `-` written as `_`
+(`"conversation_cache_mib": 16384` is `--conversation-cache-mib 16384`); `true`
+is a bare flag (`"resident_experts": true`), and `false` or `null` leaves the
+option out. `engine_env` does the same for the engine's `STRATA_` environment
+variables (`"load_image": "/data/load-image/q2"` is `STRATA_LOAD_IMAGE`; `true`
+is `1`). At start `scripts/serve.py` (`scripts/engine_config.py`) expands
+both, in the common file and in each variant's, into the `args` and `env` that
+Strata's server reads, written to `/tmp/strata-config` in the container. A
+variant's option replaces the common one of the same name. Raw `args` and `env`
+still work beside them, but naming an option in both is an error. Settings
+changed from Strata's own web page go to that temporary copy and are lost at the
+next start; edit `config/` instead. Keep top-level `max_context` and
+`engine.max_context` consistent. Contexts above 262144 require explicit rope
+scaling configured in Strata.
+
+The scheduler settings are listed in `config/server.json` with Strata's default
+values, so they can be tuned in place (see upstream `serve/turns.py` and
+`docs/BATCHING.md`): `turn_slice_s` (300: the engine time a conversation keeps
+the turn while others wait), `turn_max_wait_s` (the longest a request waits),
+`turn_hold_s` (how long the turn waits for a tool call's follow-up),
+`turn_hold_skip_timeout_s`, `turn_side_wait_s`, the `priority_*` keys (a
+request's priority band, preemption, reservations and aging), and the variant
+switching keys `default_model`, `default_idle_s`, `model_max_wait_s`,
+`model_min_resident_s`, `model_preempt` and `unknown_model`.
 
 `parallel` is a native top-level setting, currently `1` (one request at a time).
 Larger values add batch slots that use VRAM otherwise available to the expert
@@ -260,12 +288,12 @@ count to fit available memory; `/v1/status` reports the effective count in
 [upstream batching guide](https://github.com/Niko1221/Strata/blob/main/docs/BATCHING.md).
 
 Conversation parking is on disk, through our fork's `--conversation-cache-dir`
-(see the Strata pin below): `--conversation-cache-dir /data/convcache` in
-`args` writes each conversation the engine switches away from to the `strata-data`
+(see the Strata pin below): `engine.conversation_cache_dir` (`/data/convcache`)
+writes each conversation the engine switches away from to the `strata-data`
 volume, and restores it when a request continues it, avoiding repeated prompt
 processing (about 1 s instead of about 47 s for a 22K-token prompt). The K/V is
 streamed between the file and the GPU, so a restore holds only the running state
-and checkpoints in RAM; `--conversation-cache-min-free-mib 1024` lowers the
+and checkpoints in RAM; `--conversation-cache-min-free-mib 512` lowers the
 free-RAM floor from its 2560 MiB default (the locked experts leave only 2-3 GB free,
 so the default refused parking past about 70K tokens), and a
 conversation that cannot be parked or read back falls back to ordinary prompt
@@ -275,18 +303,33 @@ written (about 240 MB instead of the whole 0.9-1.1 GB file for an 18K-token
 conversation on pc26). A sibling conversation that shares a parked one's system
 prompt and tools borrows that prefix straight from its file. Files are 0.75-1.1 GB
 at 18K tokens (each checkpoint adds about 118 MB) and about 3.4 GB at 166K tokens.
-`--conversation-cache-mib 16384` caps what the files hold, removing the oldest
-first, and `--conversation-cache-slots 0` removes the slot limit.
-`--conversation-cache-min-tokens 4096` keeps short side requests (a client's title
+`--conversation-cache-mib 16384` caps what the files of all three variants hold
+together, removing the oldest file first whichever variant's, and
+`--conversation-cache-slots 0` removes the slot limit.
+`--conversation-cache-min-tokens 8192` keeps short side requests (a client's title
 or summary call) from being parked, so they cannot push a long conversation out,
-and `--conversation-cache-skip-tail 4096` does not park a conversation whose client
-only rewrote its last reply (re-rendered without its reasoning). Parked
-conversations last as long as the engine: every park file is removed when it
-starts. `/metrics` exposes usage, restores and evictions under `conversation_cache`.
+and `--conversation-cache-skip-tail 8192` does not park a conversation whose client
+only rewrote its last reply (re-rendered without its reasoning).
+`--conversation-cache-live-tail 4096` parks a conversation as of its newest
+checkpoint when it is at most 4096 tokens past it, so the running state is
+written once. `--prompt-cache 2` keeps two checkpoints per conversation (the end
+of the system prompt and the start of the last assistant turn) instead of 6:
+nearly every resume on pc26 starts at one of them, and each checkpoint left out
+saves about 118 MB of RAM and of every park's writes.
 
-Manual session files are also enabled: `slot_save_path` is `/data/sessions`, so
-`POST /slots/0?action=save|restore` with `{"filename": "NAME.bin"}` saves or
-restores the current conversation. Strata never deletes these files.
+Parked conversations are kept across restarts (`make down`/`make up`, a crash, a
+variant switch). Each folder's `identity` file names the model and the engine
+settings that wrote its files; at start the engine indexes the files of the same
+identity back into the cache without reading their K/V, and removes the rest. A
+change of model, engine version or a setting that changes what the files mean
+(`--kv`, `--max-context`, ...) therefore starts the cache empty. At stop the engine
+parks the conversation it holds, which `stop_grace_period: 60s` in `compose.yaml`
+leaves time for. A file torn by a crash fails its hashes when it is read back and is
+removed then. `/metrics` exposes usage, restores and evictions under `conversation_cache`.
+
+Manual session files (`POST /slots/0?action=save|restore`) are off: set
+`slot_save_path` (for example to `/data/sessions`) to turn them on. They are
+whole-file saves of the current conversation that Strata never deletes.
 
 Re-run `make up` to apply these settings.
 
@@ -346,7 +389,7 @@ Compose accepts these environment overrides (or an ignored `.env` file):
 | `STRATA_PORT` | `9931` | Published host port |
 | `STRATA_GPU` | `0` | HIP device ordinal; an integrated GPU may occupy 0 |
 | `HIP_ARCHITECTURES` | `gfx1101` | Image build target |
-| `BUILD_JOBS` | `2` | Limit compiler memory use |
+| `BUILD_JOBS` | `8` | Parallel compile jobs; lower it to limit compiler memory use |
 | `STRATA_VERIFY_EXISTING` | `0` | Set to `1` to checksum existing GGUFs during initialization |
 
 The image builds Strata from our fork,
@@ -395,7 +438,7 @@ Strata reads a prompt's dense matrix products through hipBLASLt only with a tuni
 table for this GPU architecture and the image's exact hipBLASLt version; otherwise it
 falls back to plain hipBLAS. Upstream ships none for gfx1101, so
 `config/gfx1101-hipblaslt-100000.txt` (hipBLASLt 1.0.0, ROCm 7.0.2) was calibrated on
-pc26's RX 7800 XT and `STRATA_HIPBLASLT_TUNING` in `config/server.json` points at it.
+pc26's RX 7800 XT and `engine_env.hipblaslt_tuning` (`STRATA_HIPBLASLT_TUNING`) in `config/server.json` points at it.
 After changing the ROCm image or the card, regenerate it:
 
 ```sh
