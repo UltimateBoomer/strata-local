@@ -4,8 +4,6 @@ from pathlib import Path
 import re
 import sys
 
-import engine_config
-
 
 def main():
     key = Path('/run/secrets/strata_api_key').read_text().strip()
@@ -19,8 +17,8 @@ def main():
     config = '/config/server.json' if model == 'qwen' else f'/config/server-{model}.json'
     if not Path(config).is_file():
         raise SystemExit(f'Missing native Strata config at {config}.')
-    # /config's "engine" and "engine_env" fields become the "args" and "env" Strata reads (engine_config.py)
-    config = engine_config.materialize(Path(config), Path('/tmp/strata-config'))
+    # The server reads /config itself ("engine" and "engine_env" fields included: the fork's serve/engine_fields.py),
+    # so the web page's Config view edits and applies these very files.
     os.environ['STRATA_API_KEY'] = key
     os.chdir('/opt/strata')
     os.execv(sys.executable, [sys.executable, '-m', 'serve.server',

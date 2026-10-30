@@ -1,12 +1,11 @@
-"""Expand this checkout's run configs into the form Strata's server reads.
+"""The checkout's tests' copy of the fork's serve/engine_fields.py: the run configs' "engine" fields as "args" and "env".
+The server reads /config itself, fields included; nothing in the image uses this file.
 
 A config names engine options as fields instead of an argv list: "engine" maps each option to its value
 ("conversation_cache_mib": 16384 is --conversation-cache-mib 16384; true is a bare flag, false or null leaves it out),
 and "engine_env" maps each STRATA_ environment variable to its value ("load_image": "/data/load-image/q2" is
 STRATA_LOAD_IMAGE; true is "1", false or null leaves it out). Raw "args" and "env" still work beside them.
 """
-import json
-from pathlib import Path
 
 
 def _value(v):
@@ -48,14 +47,3 @@ def expand(cfg: dict, where: str = 'config') -> dict:
         cfg['env'] = env
     return cfg
 
-
-def materialize(path: Path, out: Path) -> Path:
-    """Write the expanded `path`, and every variant file its "models" names, into `out`; returns the new main file."""
-    out.mkdir(parents=True, exist_ok=True)
-    cfg = expand(json.loads(path.read_text()), path.name)
-    for own in (cfg.get('models') or {}).values():
-        if isinstance(own, str):
-            variant = path.parent / own
-            (out / own).write_text(json.dumps(expand(json.loads(variant.read_text()), own), indent=2))
-    (out / path.name).write_text(json.dumps(cfg, indent=2))
-    return out / path.name

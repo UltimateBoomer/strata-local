@@ -7,7 +7,7 @@ export STRATA_MODEL
 STRATA_VARIANT ?=
 export STRATA_VARIANT
 
-.PHONY: set-api-key set-hf-token migrate-keyring-secrets secrets config build init ports up down logs calibrate tune check
+.PHONY: set-api-key set-hf-token migrate-keyring-secrets secrets config pull-config build init ports up down logs calibrate tune check
 set-api-key:
 	./scripts/credentials.sh store strata_api_key
 set-hf-token:
@@ -18,10 +18,13 @@ migrate-keyring-secrets:
 	./scripts/credentials.sh migrate-keyring hf_token
 secrets:
 	./scripts/register-podman-secrets.sh
-# Copy config/ into the volume mounted at /config; files removed from config/ stay in it.
+# Copy config/ into the volume mounted at /config; files removed from config/ stay in it. It refuses to overwrite a file
+# the web page's Config view changed (pull-config first, or FORCE=1 to discard those changes).
 config:
-	podman volume create --ignore strata-local-config >/dev/null
-	tar -C config -c --owner=0 --group=0 . | podman volume import strata-local-config -
+	./scripts/config-volume.sh push
+# Copy the run configs the web page's Config view changed back into config/.
+pull-config:
+	./scripts/config-volume.sh pull
 build:
 	$(COMPOSE) build model-init
 init: secrets config build
@@ -46,5 +49,5 @@ tune: build
 		&& test -n "$$name" && mv config/.hipblaslt-table.tmp "config/$$name" && echo "wrote config/$$name"
 check:
 	python3 -m unittest discover -s tests -v
-	sh -n scripts/credentials.sh scripts/register-podman-secrets.sh scripts/podman-secret-driver.sh
+	sh -n scripts/credentials.sh scripts/register-podman-secrets.sh scripts/podman-secret-driver.sh scripts/config-volume.sh
 	podman-compose -f compose.yaml config >/dev/null

@@ -136,7 +136,7 @@ switch: the outgoing engine parks the conversation it holds as it stops, and the
 variant's next request goes on from that file. No session file is written
 (`"model_session_dir": false`). `make up STRATA_VARIANT=q3`
 starts with IQ3_XXS, and `POST /v1/load {"model": "q3"}` switches by hand.
-`make init` downloads and packs every variant (IQ3_XXS: 76 GB more, the Coder: 29.6 GB more).
+`make init` downloads and packs every variant (IQ3_XXS: 76 GB more, the Coder: 29.6 GB more, IQ3_S: 110 GB more; its second shard, the per-layer table, is shared with Q2_0).
 
 Each variant keeps a load image in `/data/load-image/<variant>` (the fork's
 `STRATA_LOAD_IMAGE`): its GPU expert cache and RAM experts as two files in the
@@ -249,10 +249,13 @@ download. Re-run `make up` after changing these settings.
 
 Edit `config/server.json`, which uses Strata's native server configuration format
 and is imported with `config/model.json` into the `strata-local-config`
-volume mounted read-only at `/config` (`make config`; `make up` runs it).
-Importing overwrites both files but leaves files deleted from `config/` in the
-volume; run `podman volume rm strata-local-config` with the containers removed
-to clear them.
+volume mounted at `/config` (`make config`; `make up` runs it). The server reads
+these files there directly, and the web page's Config view (below) edits them in
+place, so `make config` refuses to overwrite a file the web page changed since the
+last import: `make pull-config` copies those changes back into `config/` (review
+them with `git diff`), and `make config FORCE=1` discards them. Importing leaves
+files deleted from `config/` in the volume; run `podman volume rm
+strata-local-config` with the containers removed to clear them.
 
 Engine options are fields of the `engine` object rather than an argv list: each
 key is an option without its dashes, `-` written as `_`
@@ -260,15 +263,18 @@ key is an option without its dashes, `-` written as `_`
 is a bare flag (`"resident_experts": true`), and `false` or `null` leaves the
 option out. `engine_env` does the same for the engine's `STRATA_` environment
 variables (`"load_image": "/data/load-image/q2"` is `STRATA_LOAD_IMAGE`; `true`
-is `1`). At start `scripts/serve.py` (`scripts/engine_config.py`) expands
-both, in the common file and in each variant's, into the `args` and `env` that
-Strata's server reads, written to `/tmp/strata-config` in the container. A
+is `1`). Our fork's server expands both as it reads the config, in the common
+file and in each variant's, into the `args` and `env` the engine starts with. A
 variant's option replaces the common one of the same name. Raw `args` and `env`
-still work beside them, but naming an option in both is an error. Settings
-changed from Strata's own web page go to that temporary copy and are lost at the
-next start; edit `config/` instead. Keep top-level `max_context` and
-`engine.max_context` consistent. Contexts above 262144 require explicit rope
-scaling configured in Strata.
+still work beside them, but naming an option in both is an error. Keep top-level
+`max_context` and `engine.max_context` consistent. Contexts above 262144 require
+explicit rope scaling configured in Strata.
+
+Sampling is per model: each variant's file has its own `sampling` (the defaults
+for the fields a request leaves out; a request's own values win), and the common
+`config/server.json` has none. A key the common file did set would be the default
+for every variant that leaves it out. All four Qwen variants start with the
+model card's thinking set (temperature 1.0, top_p 0.95, top_k 20).
 
 The scheduler settings are listed in `config/server.json` with Strata's default
 values, so they can be tuned in place (see upstream `serve/turns.py` and
@@ -410,6 +416,37 @@ device access and retain your supplementary groups; model storage is a named
 volume. `make logs` shows API and model-loading status. The full engine log is
 persisted at `/data/strata.log`; inspect it with
 `podman compose exec strata-server tail -n 100 /data/strata.log`.
+
+### Web page
+
+The fork replaces Strata's chat page at `http://<host>:9931/` with a console (the
+API key goes under About):
+
+- **Monitor**: the engine's state, speed and hardware, the recent requests, the turn
+  scheduler (the request holding the engine and its session, priority and time; the
+  queue in order with each request's session, variant, priority and wait; holds,
+  reservations and preemptions), the model variants (which one is loaded, what waits
+  for each, a Load button to switch), and the conversation cache: one bar of the disk
+  budget split into a part per parked conversation, every variant's, with a table of
+  the files (session, variant, size, age; files a client dropped are marked
+  obsolete). Session names come from the requests (`strata_session`,
+  `X-Strata-Session`, `metadata.user_id`) and are kept in `/data/session-names.json`;
+  a file parked before its name was seen shows the session's tag.
+- **Config**: the common `server.json` and each variant's file, as a form (sampling,
+  variants and switching, the turn scheduler, engine options and environment, any
+  other key) or as JSON. Check validates the files as a start would; Apply writes
+  them and applies them without restarting the server. Sampling, names, the
+  scheduler and switching keys take effect at once; a change to the loaded
+  variant's engine options restarts the engine only (its conversation is parked
+  first, so it comes back), and another variant's take effect at its next switch.
+  If the new engine does not start, the earlier files and engine come back. A few
+  keys (`tokenizer`, `vision`, the network settings) need the server restarted: the
+  page names them after saving. Each Apply keeps the files it replaced in
+  `/data/config-history/<time>/` (the last 50). Add a variant there too; its model
+  files still come from `make init`.
+
+The chat page is not served. `GET /api/config` and `POST /api/config`
+(`{"files": {...}, "dry_run": true}`) are the same operations for scripts.
 
 ## Validation
 

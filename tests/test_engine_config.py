@@ -1,7 +1,6 @@
 import json
 from pathlib import Path
 import sys
-import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).parents[1] / 'scripts'))
@@ -32,23 +31,22 @@ class ExpandTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'engine.layer_split'):
             engine_config.expand({'engine': {'layer_split': [1, 2]}})
 
-    def test_materialize_expands_variants(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            src, out = Path(tmp) / 'src', Path(tmp) / 'out'
-            src.mkdir()
-            (src / 'server.json').write_text(json.dumps({'models': {'a': 'server-a.json'}, 'engine': {'spec': 4}}))
-            (src / 'server-a.json').write_text(json.dumps({'engine': {'pack': '/data/pack-a'}}))
-            main = engine_config.materialize(src / 'server.json', out)
-            self.assertEqual(json.loads(main.read_text()), {'models': {'a': 'server-a.json'}, 'args': ['--spec', '4']})
-            self.assertEqual(json.loads((out / 'server-a.json').read_text()), {'args': ['--pack', '/data/pack-a']})
-
     def test_checked_in_configs_expand(self):
         config = Path(__file__).parents[1] / 'config'
-        with tempfile.TemporaryDirectory() as tmp:
-            for name in ('server.json', 'server-deepseek.json'):
-                cfg = json.loads(engine_config.materialize(config / name, Path(tmp)).read_text())
-                self.assertNotIn('engine', cfg)
-            self.assertIn('--prompt-cache', json.loads((Path(tmp) / 'server.json').read_text())['args'])
+        for name in ('server.json', 'server-deepseek.json'):
+            main = json.loads((config / name).read_text())
+            self.assertIn('--max-context', engine_config.expand(main)['args'])
+            for variant in (main.get('models') or {}).values():
+                self.assertIn('--pack', engine_config.expand(json.loads((config / variant).read_text()))['args'])
+
+    def test_each_variant_has_its_own_sampling(self):
+        """Sampling is per model: each variant's file holds its whole set, the common file none."""
+        config = Path(__file__).parents[1] / 'config'
+        main = json.loads((config / 'server.json').read_text())
+        self.assertNotIn('sampling', main)
+        for variant in main['models'].values():
+            sampling = json.loads((config / variant).read_text()).get('sampling')
+            self.assertTrue({'temperature', 'top_p', 'top_k'} <= set(sampling or {}), variant)
 
 
 if __name__ == '__main__':

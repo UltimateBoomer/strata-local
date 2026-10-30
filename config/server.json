@@ -22,7 +22,8 @@
   "models": {
     "q2": "server-q2.json",
     "q3": "server-q3.json",
-    "q1": "server-q1.json"
+    "q1": "server-q1.json",
+    "q3s": "server-q3s.json"
   },
   "default_model": null,
   "default_idle_s": 0,
@@ -31,14 +32,6 @@
   "model_preempt": false,
   "unknown_model": "current",
   "model_session_dir": false,
-  "sampling": {
-    "temperature": 1.0,
-    "top_p": 0.95,
-    "top_k": 20,
-    "min_p": 0.0,
-    "presence_penalty": 0.0,
-    "repetition_penalty": 1.0
-  },
   "engine_env": {
     "hipblaslt_tuning": "/config/gfx1101-hipblaslt-100000.txt",
     "resident_headroom_gib": 1,
