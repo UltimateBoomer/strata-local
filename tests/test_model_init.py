@@ -301,7 +301,7 @@ class PreparationTests(unittest.TestCase):
         model = json.loads((config / 'model-inkling.json').read_text())
         server = json.loads((config / 'server-inkling.json').read_text())
         names = {init.local_name(model, f) for f in init.model_files(model)}
-        gguf = Path(server['args'][server['args'].index('--model') + 1])
+        gguf = Path(server['engine']['model'])
         self.assertEqual(gguf.parent, Path('/data/model-inkling'))
         self.assertIn(gguf.name, names)
         self.assertTrue(gguf.name.endswith('.gguf'))

@@ -33,8 +33,10 @@ class ExpandTests(unittest.TestCase):
 
     def test_checked_in_configs_expand(self):
         config = Path(__file__).parents[1] / 'config'
-        main = json.loads((config / 'server.json').read_text())
-        self.assertIn('--max-context', engine_config.expand(main)['args'])
+        for name in json.loads((config / 'server.json').read_text())['models'].values():
+            with self.subTest(config=name):
+                own = json.loads((config / name).read_text())
+                self.assertIn('--max-context', engine_config.expand(own, name)['args'])
 
 
 

@@ -57,8 +57,8 @@ calibrate:
 	$(COMPOSE) run --rm --no-deps -T --entrypoint python strata-server /usr/local/lib/strata-local/calibrate.py
 # Calibrate a hipBLASLt table for this card and the image's hipBLASLt for every model with a shape file
 # (scripts/hipblaslt-shapes/<model>.txt; solution ids measured fresh): writes config/<arch>-hipblaslt-<version>-<model>.txt,
-# which engine_env.hipblaslt_tuning (STRATA_HIPBLASLT_TUNING) of the model's config names (config/server.json for Qwen,
-# config/server-inkling.json for Inkling 2 Mini). Then make up.
+# which engine_env.hipblaslt_tuning (STRATA_HIPBLASLT_TUNING) of each model's config/server-<name>.json names (the
+# qwen table for q1 and q3). Then make up.
 TUNE_MODELS := $(shell sh scripts/tune-hipblaslt.sh list)
 tune: build
 	$(COMPOSE) stop strata-server

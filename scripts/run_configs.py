@@ -1,9 +1,8 @@
 """The run configs PolyStrata's server starts with, made from config/ at each start.
 
-config/server.json holds what every Qwen3.8-Flash-Next model shares and lists the models ("models": name -> file).
-A model's file adds its own keys over those (its "engine", "engine_env" and "sampling" key by key; any other key
-replaces the shared one), unless it names its own "exe": then it is another engine (Inkling 2 Mini on strata-poly) and
-takes only the server's own keys from server.json (SERVER_KEYS). Each model becomes one PolyStrata run config,
+config/server.json holds only what is not any model's: the server's keys (SERVER_KEYS) and the models ("models":
+name -> file). Each model's file is the whole of that model's config (its engine, options, sampling, drafter,
+pictures) and takes the server's keys from server.json. Each model becomes one PolyStrata run config,
 <out>/strata-<name>.json, with "engine" and "engine_env" written out as "args" and "env" (engine_config.py), because
 PolyStrata's server lists the models beside the config it starts with (its serve/models.py) and, with
 "switch_on_request", loads the one a request names.
@@ -17,12 +16,10 @@ from pathlib import Path
 
 import engine_config
 
-# keys of server.json that belong to the server, not to an engine: every model takes them
+# keys of server.json that belong to the server, not to a model: every model takes them
 SERVER_KEYS = frozenset({"switch_on_request", "backend", "cwd", "unknown_model"})
 # keys that are strata-local's own: read here, never written into a run config
 OWN_KEYS = frozenset({"models", "default"})
-# keys merged key by key between server.json and a model's file
-MERGED_KEYS = frozenset({"engine", "engine_env", "sampling", "env"})
 
 
 def _read(path: Path) -> dict:
@@ -33,28 +30,21 @@ def _read(path: Path) -> dict:
 
 
 def merge(common: dict, own: dict) -> dict:
-    """A model's config: `own` over `common` (MERGED_KEYS key by key), or over the server's keys alone when `own` has an
-    "exe" of its own."""
-    if "exe" in own:
-        base = {k: v for k, v in common.items() if k in SERVER_KEYS}
-    else:
-        base = {k: v for k, v in common.items() if k not in OWN_KEYS}
-    out = dict(base)
-    for key, value in own.items():
-        if key in MERGED_KEYS and isinstance(value, dict) and isinstance(out.get(key), dict):
-            out[key] = {**out[key], **value}
-        else:
-            out[key] = value
-    return out
+    """A model's config: the server's keys of `common` (server.json), with `own` (the model's file) over them."""
+    return {**{k: v for k, v in common.items() if k in SERVER_KEYS}, **own}
 
 
 def build(config_dir: Path, model: str = "qwen") -> tuple[dict[str, dict], str]:
     """(name -> run config, the name of the one to start with by default) for STRATA_MODEL `model`."""
     config_dir = Path(config_dir)
-    if model != "qwen":
-        cfg = _read(config_dir / f"server-{model}.json")
-        return {model: engine_config.expand(cfg, f"server-{model}.json")}, model
     common = _read(config_dir / "server.json")
+    other = set(common) - SERVER_KEYS - OWN_KEYS
+    if other:
+        raise ValueError(f"server.json: {', '.join(sorted(other))} belong in the models' files (it holds only "
+                         f"{', '.join(sorted(SERVER_KEYS | OWN_KEYS))})")
+    if model != "qwen":
+        cfg = merge(common, _read(config_dir / f"server-{model}.json"))
+        return {model: engine_config.expand(cfg, f"server-{model}.json")}, model
     models = common.get("models")
     if not isinstance(models, dict) or not models:
         raise ValueError('server.json: "models" must name at least one model')

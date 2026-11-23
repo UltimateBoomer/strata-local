@@ -119,10 +119,15 @@ and prepares all three. `STRATA_MODEL=<name>` still serves
 
 At each start `scripts/serve.py` writes one PolyStrata run config per model,
 `/tmp/strata-run/strata-<name>.json`, from `config/` (`scripts/run_configs.py`):
-`config/server.json` holds what the Qwen models share and lists the models
-(`"models"`), each model's file adds its own keys over it, and a file that names
-its own `"exe"` (Inkling) is another engine and takes only the server's keys. The
-`engine` and `engine_env` fields are written out as `args` and `env` (below).
+`config/server.json` holds only what belongs to no model: the server's keys
+(`cwd`, `backend`, `switch_on_request`) and the models (`"models"`); any other key
+there is refused. Every model's `config/server-<name>.json` is the whole of that
+model, in the same shape: its names (`model_name`, `display_name`, `aliases`), its
+engine (`exe`), `tokenizer`, `log`, `sampling`, and its engine options as fields
+(`engine`, `engine_env`, `env`); the Qwen files add the drafter (`drafting`,
+`user_args`) and pictures (`vision`). q1 and q3 repeat the same engine settings,
+so change both. The `engine` and `engine_env` fields are written out as `args`
+and `env` (below).
 PolyStrata's server lists the run configs beside the one it starts with and
 switches between them.
 
@@ -133,7 +138,7 @@ through the API, one request at a time, the model's own sampling and thinking:
 |---|---|---|
 | q1 (UD-IQ1_M) | 32-38 tokens/s | about 1,100 tokens/s |
 | q3 (UD-IQ3_XXS) | 16-17 tokens/s | about 940 tokens/s |
-| inkling (UD-Q4_K_XL, 200K context) | 47-49 tokens/s | about 490-530 tokens/s |
+| inkling (UD-Q4_K_XL, 200K context) | 47-49 tokens/s | about 490-530 tokens/s; 775 with its hipBLASLt table (9K, one request) |
 
 #### Inkling 2 Mini
 
@@ -180,14 +185,17 @@ ISTA-DASLab's `mmproj-Qwen3.8-Flash-Next-BF16.gguf` (a `sources` entry in
 `config/model-q1.json`). Unsloth's UD-IQ1_S cannot be used: it mixes two expert
 formats in one layer, which Strata refuses.
 
-The Qwen models draft with DFlash2 alone (`"drafting": "dflash2"`, and in
-`config/server.json`'s `engine` `"draft": "dflash2"`, `"draft_fallback": "none"`,
-`"spec": 6`, `"draft_conf": 0.7`): the MTP layer is not loaded, which leaves about
-1 GB more VRAM for the expert cache. `--mtp` stays in the arguments; the engine
-reads only the draft vocabulary from it. PolyStrata's server chooses the drafter
-from `"drafting"` and keeps the pinned drafter file named in `"user_args"`; its
-start log says what it chose (`drafting: DFlash2 alone`). `make init` fetches the
-drafter once, into `/data/dflash2` (`"dflash2": true` in `config/model-q1.json`).
+The Qwen models draft with DFlash2 alone (`"drafting": "dflash2"` in
+their `config/server-<name>.json`): the MTP layer is not loaded, which leaves about 1 GB more
+VRAM for the expert cache. PolyStrata's server writes the drafter's options itself
+(`--draft dflash2 --draft-fallback none`, its own window and confidence for the
+card) and drops any written in `engine`; it keeps only what `"user_args"` pins:
+the drafter file (`--draft-model`; without it the server looks for the drafter
+beside the pack, misses `/data/dflash2` and starts the MTP layer instead), the
+window (`--spec 6`) and the confidence (`--draft-conf 0.7`). The draft vocabulary
+is `engine.mtp_draft_vocab`. The start log says what it chose (`drafting: DFlash2
+alone`). `make init` fetches the drafter once, into `/data/dflash2` (`"dflash2":
+true` in `config/model-q1.json`).
 
 Each model keeps part of its experts on the card and the rest in RAM, within
 `--resident-budget-gib 22`; whatever does not fit is read from the SSD unbuffered
@@ -273,17 +281,18 @@ or Anthropic image blocks. For Pi, set the model's `input` to
 `["text", "image"]`. Images are encoded once and cached for reuse during the
 server session. CPU encoding adds latency on the first use of an image.
 
-In `config/server.json`, `vision.threads` controls encoder threads (default 8); `vision.max_tokens`
+In the Qwen models' files, `vision.threads` controls encoder threads (default 8); `vision.max_tokens`
 controls image resolution through its token budget (default 300, matching
 upstream's CPU setting). Increase the image budget if small text or fine detail
 is lost, at the cost of CPU time and context usage. For text-only serving, remove the `vision` object and `engine.vision`.
-Optionally remove `vision_file` from `config/model.json` to skip the projector
-download. Re-run `make up` after changing these settings.
+Optionally remove the projector's `sources` entry from `config/model-q1.json` to skip
+its download. Re-run `make up` after changing these settings.
 
 ### Text generation
 
-Edit `config/server.json`, which uses Strata's native server configuration format
-and is imported with `config/model.json` into the `strata-local-config`
+Edit `config/server.json` and the models' `config/server-<name>.json`, which use
+Strata's native server configuration format and are imported with the
+`config/model-<name>.json` files into the `strata-local-config`
 volume mounted at `/config` (`make config`; `make up` runs it). The server reads
 these files there directly. `make config` refuses to overwrite a file changed in
 the volume since the last import: `make pull-config` copies those changes back into
@@ -312,11 +321,14 @@ repeat a message, the model called it corrupted), and with `HIP_FAST_DEC` alone
 they wrote garbage from the first token. The other gfx11 defaults it lists at start
 stay on.
 
-Sampling is per model: each Qwen model's file has its own `sampling` (the defaults
-for the fields a request leaves out; a request's own values win), and the common
-`config/server.json` has none. Both Qwen models start with the model card's
-thinking set (temperature 1.0, top_p 0.95, top_k 20); Inkling 2 Mini with
-PolyStrata's defaults for it.
+Sampling is per model: each model's file has its own `sampling` (the defaults
+for the fields a request leaves out; a request's own values win). Both Qwen models
+start with the model card's thinking set (temperature 1.0, top_p 0.95, top_k 20);
+Inkling 2 Mini with Unsloth's recommended settings
+([unsloth.ai/docs/models/inkling-2-mini](https://unsloth.ai/docs/models/inkling-2-mini):
+temperature 1.0, top_p 1.0, top_k 0, min_p 0.0), with top_k written as 64:
+PolyStrata's server takes 1-64 and sends 0 ("off") to the engine as 64. Without
+it, a request that set no temperature was answered greedily.
 
 `parallel` is a native top-level setting, currently `1` (one request at a time).
 Larger values add batch slots that use VRAM otherwise available to the expert
@@ -340,7 +352,8 @@ whole-file saves of the current conversation that Strata never deletes.
 
 Re-run `make up` to apply these settings.
 
-`config/model.json` controls downloads and optional preparation. The initializer
+Each model's `config/model-<name>.json` controls its downloads and optional
+preparation (`make init` prepares every model `config/server.json` lists). The initializer
 has no repository, architecture, shard-count, projector, profile, or MTP rules.
 For example, downloading a single GGUF needs only:
 
@@ -356,7 +369,7 @@ For example, downloading a single GGUF needs only:
 any downloads. Pin a commit for reproducible starts. `files` explicitly selects
 all required shards; optional `vision_file` selects any matching projector.
 Files require Hugging Face LFS size and SHA-256 metadata. They are stored by
-basename under `/data/model`, so selected filenames must have unique basenames.
+basename under the model's `/data/model-<name>`, so selected filenames must have unique basenames.
 The manifest preserves the resolved repository metadata.
 
 Optional `rename` maps a repository file to the name it is saved as (Inkling's
@@ -368,14 +381,14 @@ cached per resolved model and complete configuration, and a failed command
 prevents publication of the stable symlinks. With no preparation configured,
 the initializer only downloads files and creates an empty pack directory.
 
-The supplied configuration explicitly packs the current model, prepares its
-MTP artifacts under `/data/pack/mtp/rt`, and copies its expert profile. Change
+The supplied Qwen configurations explicitly pack each model, prepare its
+MTP artifacts under `/data/pack-<name>/mtp/rt`, and copy its expert profile. Change
 or remove those steps when switching models. Changing preparation configuration
 creates a fresh pack directory while reusing downloaded model files. Download
 directories depend only on repository, resolved revision, and the shard list.
 Files from older cache directories with matching manifest checksums are reused
 through hard links; full verification remains opt-in for existing files.
-Update `config/server.json` to match the new native model, tokenizer, pack,
+Update the model's `config/server-<name>.json` to match the new native model, tokenizer, pack,
 profile, vision, and drafting paths/options. Model compatibility and required
 packing tools are determined by Strata; downloading a model does not make an
 unsupported architecture runnable. Re-run `make up` after configuration changes.
@@ -452,8 +465,8 @@ container with the same GPU and model mounts.
 Stop other GPU inference servers first. Calibration measures PCIe share, draft
 confidence, CPU worker count, and adaptive expert-cache settings; it can take
 15–30 minutes or longer. It prints recommended settings and measurements without
-editing the configuration. Apply the desired settings to `config/server.json`
-(or the model's file when they differ by model), then restart serving with
+editing the configuration. Apply the desired settings to the models' files
+(`config/server-q1.json` and `config/server-q3.json`), then restart serving with
 `make up`.
 The server stays stopped if calibration finishes or fails.
 
@@ -467,7 +480,7 @@ model has its own, calibrated on pc26's RX 7800 XT (hipBLASLt 1.0.0, ROCm 7.0.2)
 
 | Model | Engine | Shapes | Table | Named in |
 | --- | --- | --- | --- | --- |
-| Qwen3.8-Flash-Next (q1, q3) | strata | `scripts/hipblaslt-shapes/qwen.txt` | `config/gfx1101-hipblaslt-100000-qwen.txt` | `config/server.json` |
+| Qwen3.8-Flash-Next (q1, q3) | strata | `scripts/hipblaslt-shapes/qwen.txt` | `config/gfx1101-hipblaslt-100000-qwen.txt` | `config/server-q1.json`, `config/server-q3.json` |
 | Inkling 2 Mini | strata-poly | `scripts/hipblaslt-shapes/inkling.txt` | `config/gfx1101-hipblaslt-100000-inkling.txt` | `config/server-inkling.json` |
 
 After changing the ROCm image or the card, regenerate them:

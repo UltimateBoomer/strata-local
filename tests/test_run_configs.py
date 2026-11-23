@@ -39,11 +39,18 @@ class RunConfigTests(unittest.TestCase):
         self.assertIn('--kv-whole', ink['args'])
 
     def test_merge(self):
-        common = {'exe': 'a', 'backend': 'hip', 'engine': {'x': 1, 'y': 2}, 'models': {}, 'switch_on_request': True}
-        self.assertEqual(run_configs.merge(common, {'engine': {'y': 3}}),
-                         {'exe': 'a', 'backend': 'hip', 'engine': {'x': 1, 'y': 3}, 'switch_on_request': True})
-        self.assertEqual(run_configs.merge(common, {'exe': 'b', 'args': []}),
-                         {'backend': 'hip', 'switch_on_request': True, 'exe': 'b', 'args': []})
+        common = {'backend': 'hip', 'models': {}, 'switch_on_request': True, 'cwd': '/w'}
+        self.assertEqual(run_configs.merge(common, {'exe': 'b', 'engine': {'y': 3}, 'cwd': '/x'}),
+                         {'backend': 'hip', 'switch_on_request': True, 'cwd': '/x', 'exe': 'b', 'engine': {'y': 3}})
+
+    def test_server_json_is_model_agnostic(self):
+        """A model's setting in server.json is refused: it belongs in the model's file."""
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / 'server.json').write_text(json.dumps({'cwd': '/w', 'models': {'a': 'server-a.json'},
+                                                               'engine': {'kv': 'int8'}}))
+            (Path(tmp) / 'server-a.json').write_text(json.dumps({'exe': 'x'}))
+            with self.assertRaisesRegex(ValueError, 'engine belong in the models'):
+                run_configs.build(Path(tmp))
 
     def test_write_replaces(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -55,6 +62,30 @@ class RunConfigTests(unittest.TestCase):
     def test_alone(self):
         configs, first = run_configs.build(CONFIG, 'inkling')
         self.assertEqual((list(configs), first), (['inkling'], 'inkling'))
+
+    def test_model_files_have_one_shape(self):
+        """server.json holds only the server's keys; every model file is the whole model: its names (model_name,
+        display_name, aliases), engine, tokenizer (the one its pack's preparation writes), log, sampling and engine
+        options as fields."""
+        common = json.loads((CONFIG / 'server.json').read_text())
+        self.assertLessEqual(set(common), run_configs.SERVER_KEYS | run_configs.OWN_KEYS)
+        for name, file in common['models'].items():
+            own = json.loads((CONFIG / file).read_text())
+            self.assertLessEqual({'model_name', 'display_name', 'aliases', 'exe', 'tokenizer', 'log', 'sampling', 'engine'},
+                                 set(own), name)
+            self.assertEqual(own['tokenizer'], f'/data/pack-{name}/tokenizer', name)
+            self.assertNotIn('args', own, name)      # options as "engine" fields
+            self.assertFalse(run_configs.SERVER_KEYS & set(own), name)   # server.json's
+            if own.get('drafting') == 'dflash2':
+                # PolyStrata's server writes the drafter's options and keeps only those pinned in user_args
+                self.assertFalse({'draft', 'draft_model', 'draft_fallback', 'draft_conf', 'spec'} & set(own['engine']), name)
+                self.assertIn('--draft-model', own['user_args'], name)
+
+    def test_inkling_sampling(self):
+        """Unsloth's recommended sampling for Inkling 2 Mini (unsloth.ai/docs/models/inkling-2-mini): temperature 1.0,
+        top_p 1.0, top_k 0 (off), min_p 0.0. PolyStrata's server takes top_k 1..64 and sends 0 to the engine as 64."""
+        configs, _ = run_configs.build(CONFIG)
+        self.assertEqual(configs['inkling']['sampling'], {'temperature': 1.0, 'top_p': 1.0, 'top_k': 64, 'min_p': 0.0})
 
     def test_hipblaslt_tables(self):
         """Every model's STRATA_HIPBLASLT_TUNING is a table in config/ (the volume at /config) that make tune writes from
