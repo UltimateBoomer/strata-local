@@ -4,10 +4,12 @@
     "--model",
     "/data/model-inkling/Inkling-2-Mini-UD-Q4_K_XL.gguf",
     "--max-context",
-    "32768",
+    "200000",
     "--expert-profile",
     "/data/pack-inkling/expert-profile.txt",
-    "--kv-whole"
+    "--kv-whole",
+    "--prompt-batch",
+    "2048"
   ],
   "cwd": "/opt/strata/terminal",
   "tokenizer": "/data/pack-inkling/tokenizer",

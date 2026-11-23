@@ -133,7 +133,7 @@ through the API, one request at a time, the model's own sampling and thinking:
 |---|---|---|
 | q1 (UD-IQ1_M) | 32-38 tokens/s | about 1,100 tokens/s |
 | q3 (UD-IQ3_XXS) | 16-17 tokens/s | about 940 tokens/s |
-| inkling (UD-Q4_K_XL) | 57-61 tokens/s | about 410 tokens/s |
+| inkling (UD-Q4_K_XL, 200K context) | 47-49 tokens/s | about 490-530 tokens/s |
 
 #### Inkling 2 Mini
 
@@ -148,10 +148,19 @@ layout), pinned to the commit PolyStrata's setup uses. Unsloth names the file
 `make init` builds its tokenizer folder from the GGUF (PolyStrata's
 `tools/strata_tokenizer.py`).
 
-UD-Q4_K_XL does not fit whole in 16 GB of VRAM: the card holds most of its
+UD-Q4_K_XL does not fit whole in 16 GB of VRAM: the card holds part of its
 experts and strata-poly reads the rest from RAM. The run config is the one
-PolyStrata's setup writes for an AMD card: a 32K context, `--kv-whole` (the
-attention caches take their VRAM at load) and one request at a time. Pictures
+PolyStrata's setup writes for an AMD card (`--kv-whole`: the attention caches take
+their VRAM at load; one request at a time) with a 200,000-token context and
+`--prompt-batch 2048`. The model takes 1,048,576 tokens, but its attention caches
+need 32 KB a token in VRAM: measured on pc26 with `strata-poly --tokens` (3 tokens
+in, 64 written), 32K leaves about 3,000 of its 3,072 routed experts on the card and
+writes about 61 tokens/s; 128K 1,606 experts, 59 tokens/s; 200K 1,006-1,162, 49;
+256K 770, 55; 320K 354, 44; 384K none, 22; 512K and 1M do not load (no VRAM for
+the caches). The larger the context, the fewer experts stay on the card. Reading
+an 8,000-token prompt at 200K: 445 tokens/s with the engine's 1,024 tokens at a
+time, 534 with `--prompt-batch 2048` (writing 49.0 and 48.6 tokens/s); 4096, a
+larger staging buffer (`--stage-mib 4096`) and `--lock-experts` read no faster. Pictures
 are off: PolyStrata's picture tower is a CUDA program. Inkling 2 Mini thinks
 before it answers unless the request sets `reasoning_effort` to `none`, so give
 it room in `max_tokens`. The engine writes the experts it used to
