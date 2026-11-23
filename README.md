@@ -459,22 +459,40 @@ The server stays stopped if calibration finishes or fails.
 
 ### hipBLASLt tuning
 
-Strata reads a prompt's dense matrix products through hipBLASLt only with a tuning
-table for this GPU architecture and the image's exact hipBLASLt version; otherwise it
-falls back to plain hipBLAS. Upstream ships none for gfx1101, so
-`config/gfx1101-hipblaslt-100000.txt` (hipBLASLt 1.0.0, ROCm 7.0.2) was calibrated on
-pc26's RX 7800 XT and `engine_env.hipblaslt_tuning` (`STRATA_HIPBLASLT_TUNING`) in `config/server.json` points at it.
-After changing the ROCm image or the card, regenerate it:
+Both engines read a prompt's matrix products through hipBLASLt only with a tuning
+table for this GPU architecture and the image's exact hipBLASLt version
+(`STRATA_HIPBLASLT_TUNING`, `engine_env.hipblaslt_tuning` in a model's config);
+otherwise they fall back to plain hipBLAS. A table's rows are matrix shapes, so each
+model has its own, calibrated on pc26's RX 7800 XT (hipBLASLt 1.0.0, ROCm 7.0.2):
+
+| Model | Engine | Shapes | Table | Named in |
+| --- | --- | --- | --- | --- |
+| Qwen3.8-Flash-Next (q1, q3) | strata | `scripts/hipblaslt-shapes/qwen.txt` | `config/gfx1101-hipblaslt-100000-qwen.txt` | `config/server.json` |
+| Inkling 2 Mini | strata-poly | `scripts/hipblaslt-shapes/inkling.txt` | `config/gfx1101-hipblaslt-100000-inkling.txt` | `config/server-inkling.json` |
+
+After changing the ROCm image or the card, regenerate them:
 
 ```sh
 make tune
 ```
 
-This stops the server, builds the image, and runs `tune_hipblaslt` over the 43 GEMM
-shapes of upstream's gfx1100 table, measuring every solution id on this card (about two
-minutes). It writes `config/<arch>-hipblaslt-<version>.txt`; point
-`STRATA_HIPBLASLT_TUNING` at that file and `make up`. The engine refuses a table for
-another version, logging it, and reads prompts on plain hipBLAS again.
+This stops the server, builds the image, and runs `tune_hipblaslt` over each model's
+shapes, measuring every solution id on this card (a few minutes a model). It writes
+`config/<arch>-hipblaslt-<version>-<model>.txt` for every model; point each model's
+`hipblaslt_tuning` at its file if the name changed, then `make up`. The engines refuse a
+table for another version, logging it, and read prompts on plain hipBLAS again. To tune
+another model, add `scripts/hipblaslt-shapes/<model>.txt` (one `tune_hipblaslt --case`
+a line: `dtype,T,N,K,ldy`) and name its table in the model's config.
+
+strata-poly takes the table in our PolyStrata fork only (`src/poly/hip_lt.cpp`): in a
+HIP build its quantized prompt products are dequantized matrices multiplied by hipBLAS,
+and rocBLAS's own kernels for Inkling's shapes are 3-6x slower than the tuned solutions.
+Measured on pc26 on 2026-11-23 (Inkling 2 Mini UD-Q4_K_XL, `--prompt-batch 2048`, one
+run each): 8K / 32K-token prompts at 477 / 426 tok/s without the table, 916 / 765 with
+it, and 953 / 801 with `ROCBLAS_USE_HIPBLASLT=1` too (rocBLAS's hipBLASLt backend for
+the attention products), as `config/server-inkling.json` runs it.
+
+For Qwen:
 
 Measured on pc26 on 2026-10-20 (Q2_0, this configuration; medians of 2-3 fresh prompts
 after a warm-up; repeating the first arm at the end agreed within 0.6%):

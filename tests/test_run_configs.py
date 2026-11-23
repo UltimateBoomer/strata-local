@@ -32,7 +32,9 @@ class RunConfigTests(unittest.TestCase):
             self.assertEqual(configs[q]['exe'], '/opt/strata/engine/strata')
         ink = configs['inkling']
         self.assertEqual(ink['exe'], '/opt/strata/engine/strata-poly')
-        self.assertNotIn('env', ink)                     # none of the Qwen engine's switches
+        # none of the Qwen engine's switches: its own hipBLASLt table, and rocBLAS's hipBLASLt backend
+        self.assertEqual(ink['env'], {'STRATA_HIPBLASLT_TUNING': '/config/gfx1101-hipblaslt-100000-inkling.txt',
+                                      'ROCBLAS_USE_HIPBLASLT': '1'})
         self.assertNotIn('vision', ink)
         self.assertIn('--kv-whole', ink['args'])
 
@@ -53,6 +55,29 @@ class RunConfigTests(unittest.TestCase):
     def test_alone(self):
         configs, first = run_configs.build(CONFIG, 'inkling')
         self.assertEqual((list(configs), first), (['inkling'], 'inkling'))
+
+    def test_hipblaslt_tables(self):
+        """Every model's STRATA_HIPBLASLT_TUNING is a table in config/ (the volume at /config) that make tune writes from
+        a shape file, and every shape file's table is named by a model: config/<arch>-hipblaslt-<version>-<shapes>.txt."""
+        configs, _ = run_configs.build(CONFIG)
+        named = {}
+        for name, cfg in configs.items():
+            path = cfg.get('env', {}).get('STRATA_HIPBLASLT_TUNING')
+            self.assertIsNotNone(path, name)
+            self.assertTrue(path.startswith('/config/'), name)
+            table = CONFIG / path.removeprefix('/config/')
+            self.assertTrue(table.is_file(), f'{name}: {table}')
+            self.assertEqual(table.read_text().splitlines()[1].split()[0], 'STRATA_HIPBLASLT_TUNING_V1', name)
+            named[table.stem.rsplit('-', 1)[1]] = table
+        shapes = sorted(p.stem for p in (CONFIG.parent / 'scripts' / 'hipblaslt-shapes').glob('*.txt'))
+        self.assertEqual(sorted(named), shapes)
+        for model in shapes:
+            lines = [ln for ln in (CONFIG.parent / 'scripts' / 'hipblaslt-shapes' / f'{model}.txt').read_text().splitlines()
+                     if ln.strip() and not ln.lstrip().startswith('#')]
+            rows = [ln.split() for ln in named[model].read_text().splitlines()[2:] if ln.strip() and not ln.startswith('#')]
+            # the table has a row for every shape (dtype,T,N,K,ldy -> dtype N K ldy T solution)
+            self.assertEqual(sorted(tuple(ln.split(',')) for ln in lines),
+                             sorted((r[0], r[4], r[1], r[2], r[3]) for r in rows), model)
 
 
 if __name__ == '__main__':

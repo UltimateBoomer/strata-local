@@ -11,6 +11,12 @@
     "--prompt-batch",
     "2048"
   ],
+  "engine_env": {
+    "hipblaslt_tuning": "/config/gfx1101-hipblaslt-100000-inkling.txt"
+  },
+  "env": {
+    "ROCBLAS_USE_HIPBLASLT": "1"
+  },
   "cwd": "/opt/strata/terminal",
   "tokenizer": "/data/pack-inkling/tokenizer",
   "model_name": "inkling-2-mini-ud-q4_k_xl",

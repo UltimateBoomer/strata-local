@@ -12,7 +12,7 @@
     "inkling": "server-inkling.json"
   },
   "engine_env": {
-    "hipblaslt_tuning": "/config/gfx1101-hipblaslt-100000.txt",
+    "hipblaslt_tuning": "/config/gfx1101-hipblaslt-100000-qwen.txt",
     "resident_headroom_gib": 1,
     "hip_wmma": 1,
     "pa_fast": 1,

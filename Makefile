@@ -21,7 +21,7 @@ STRATA_COMMIT ?= $(call git_id,)
 STRATA_BUILD_ID ?= $(call git_id,-- $(ENGINE_SOURCES))
 export STRATA_COMMIT STRATA_BUILD_ID
 
-.PHONY: set-api-key set-hf-token migrate-keyring-secrets secrets config pull-config build init ports up down logs calibrate tune check \
+.PHONY: set-api-key set-hf-token migrate-keyring-secrets secrets config pull-config build init ports up down logs calibrate tune check\
 	quadlet quadlet-uninstall
 set-api-key:
 	./scripts/credentials.sh store strata_api_key
@@ -55,15 +55,23 @@ logs:
 calibrate:
 	$(COMPOSE) stop strata-server
 	$(COMPOSE) run --rm --no-deps -T --entrypoint python strata-server /usr/local/lib/strata-local/calibrate.py
-# Calibrate a hipBLASLt table for this card and the image's hipBLASLt, over the 43 rows of upstream's gfx1100 1.4.1
-# table (solution ids measured fresh); writes config/<arch>-hipblaslt-<version>.txt. Point
-# engine_env.hipblaslt_tuning (STRATA_HIPBLASLT_TUNING) in config/server.json at it, then make up.
+# Calibrate a hipBLASLt table for this card and the image's hipBLASLt for every model with a shape file
+# (scripts/hipblaslt-shapes/<model>.txt; solution ids measured fresh): writes config/<arch>-hipblaslt-<version>-<model>.txt,
+# which engine_env.hipblaslt_tuning (STRATA_HIPBLASLT_TUNING) of the model's config names (config/server.json for Qwen,
+# config/server-inkling.json for Inkling 2 Mini). Then make up.
+TUNE_MODELS := $(shell sh scripts/tune-hipblaslt.sh list)
 tune: build
 	$(COMPOSE) stop strata-server
-	$(COMPOSE) run --rm --no-deps -T --entrypoint sh strata-server /usr/local/lib/strata-local/tune-hipblaslt.sh \
-		> config/.hipblaslt-table.tmp
-	name=$$(awk 'NR == 2 && $$1 == "STRATA_HIPBLASLT_TUNING_V1" {print $$2 "-hipblaslt-" $$3 ".txt"}' config/.hipblaslt-table.tmp) \
-		&& test -n "$$name" && mv config/.hipblaslt-table.tmp "config/$$name" && echo "wrote config/$$name"
+	set -e; for model in $(TUNE_MODELS); do \
+		echo "tuning $$model" >&2; \
+		$(COMPOSE) run --rm --no-deps -T --entrypoint sh strata-server \
+			/usr/local/lib/strata-local/tune-hipblaslt.sh "$$model" > config/.hipblaslt-table.tmp; \
+		name=$$(awk -v m="$$model" 'NR == 2 && $$1 == "STRATA_HIPBLASLT_TUNING_V1" {print $$2 "-hipblaslt-" $$3 "-" m ".txt"}' \
+			config/.hipblaslt-table.tmp); \
+		test -n "$$name"; \
+		mv config/.hipblaslt-table.tmp "config/$$name"; \
+		echo "wrote config/$$name"; \
+	done
 # The server as a Podman Quadlet unit of this user's systemd manager instead of a compose container: it starts at boot
 # (with lingering) and restarts when it fails. It runs on this machine only, not over CONTAINER_CONNECTION. The compose
 # server and the unit's serve the same port and volumes; run one or the other.

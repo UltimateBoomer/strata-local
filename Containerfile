@@ -76,6 +76,8 @@ COPY . ./
 COPY --from=local scripts/model-init.py scripts/serve.py scripts/engine_config.py scripts/run_configs.py \
     scripts/calibrate.py scripts/tune-hipblaslt.sh \
     /usr/local/lib/strata-local/
+# the GEMM shapes make tune calibrates, one file a model
+COPY --from=local scripts/hipblaslt-shapes /usr/local/lib/strata-local/hipblaslt-shapes/
 ARG STRATA_COMMIT=unknown
 # STRATA_BUILD_ID: the last commit to the engine's sources (the Makefile's ENGINE_SOURCES)
 ARG STRATA_BUILD_ID=unknown
