@@ -3,11 +3,17 @@ name: strata-local
 x-runtime: &runtime
   image: localhost/strata-local:hip
   build:
-    context: .
-    dockerfile: Containerfile
+    # The Strata checkout (the Makefile's STRATA_SRC): the image builds its working tree (uncommitted changes
+    # included), not a pushed commit. This directory is the second context, "local": the scripts the image installs.
+    context: "${STRATA_SRC:-../Strata}"
+    dockerfile: "${STRATA_LOCAL_DIR:-.}/Containerfile"
+    additional_contexts:
+      local: "${STRATA_LOCAL_DIR:-.}"
     args:
       HIP_ARCHITECTURES: "${HIP_ARCHITECTURES:-gfx1101}"
       BUILD_JOBS: "${BUILD_JOBS:-8}"
+      STRATA_BUILD_ID: "${STRATA_BUILD_ID:-unknown}"
+      STRATA_COMMIT: "${STRATA_COMMIT:-unknown}"
   platform: linux/amd64
   # A file log, not journald: a rootless system user (UID < 1000) cannot read its containers' journald entries.
   logging:

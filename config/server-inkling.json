@@ -1,0 +1,19 @@
+{
+  "exe": "/opt/strata/engine/strata-inkling",
+  "cwd": "/opt/strata/terminal",
+  "arch": "inkling2_loop",
+  "tokenizer": "/data/pack-inkling/tokenizer",
+  "backend": "hip",
+  "model_name": "inkling-2-mini-sq-15",
+  "aliases": [
+    "inkling"
+  ],
+  "log": "/data/strata-inkling.log",
+  "drafting": "dspark",
+  "parallel": 1,
+  "engine": {
+    "native": "/data/model-inkling/Inkling-2-Mini-SQ-15.strata",
+    "vision": "/data/model-inkling/Inkling-2-Mini-Vision.strata",
+    "max_context": 32768
+  }
+}

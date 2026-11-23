@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 import sys
 
-sys.path.insert(0, '/opt/strata')
+sys.path.insert(0, '/opt/strata/terminal')
 from serve import engine_fields, models  # noqa: E402
 
 
@@ -18,7 +18,7 @@ def main():
         _, cfg = models.load(cfg, str(path), os.environ.get('STRATA_VARIANT') or None)
     out = Path('/tmp/calibrate.json')
     out.write_text(json.dumps(cfg))
-    os.chdir('/opt/strata')
+    os.chdir('/opt/strata/terminal')
     os.execv(sys.executable, [sys.executable, 'tools/calibrate.py', str(out)])
 
 

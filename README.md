@@ -6,8 +6,8 @@ waits for a one-shot model initializer, then recreates the authenticated server.
 The endpoint is `http://127.0.0.1:9931/v1` by default; set
 `STRATA_BIND_ADDRESS` to publish on another interface.
 
-The default is **Qwen3.8-Flash-Next Q2_0**, with CPU image encoding,
-200000 context, INT8 KV and MTP drafting. It uses the original full-expert model.
+The default is **Qwen3.8-Flash-Next Unsloth UD-IQ1_M** (Dynamic V3.1, about 1 bit), with CPU image encoding,
+200000 context, INT8 KV and DFlash2 drafting (no MTP layer loaded). It keeps every expert of the model.
 See [supported models](https://github.com/Niko1221/Strata/blob/main/docs/MODELS.md).
 
 ## Requirements
@@ -30,6 +30,9 @@ See [supported models](https://github.com/Niko1221/Strata/blob/main/docs/MODELS.
   cannot raise a host hard limit; check `ulimit -Hl` if container creation fails.
 
 ## Start
+
+The image is built from a checkout of our Strata fork, `../Strata` by default
+(`STRATA_SRC`, below); it needs the 0.2.19 layout (`engine/`, `terminal/`).
 
 ```sh
 make set-api-key
@@ -86,31 +89,57 @@ make down
 ```
 
 Use your stored API key as a Bearer token and request model
-`qwen3.8-flash-next-q2_0`. The server also exposes `/v1/models`.
+`qwen3.8-flash-next-unsloth-ud-iq1_m`. The server also exposes `/v1/models`.
 `make down` preserves the model volume and credentials.
 
 ### Switching models
 
-The image carries two engines, and one server switches between the Qwen variants
-and DeepSeek-V4.1-Flash as requests ask for them (the fork's `"models"` with
-variants of two model families, documented in Strata's `docs/BATCHING.md`):
+One server switches between the Qwen variants as requests ask for them (the
+fork's `"models"`, documented in Strata's `docs/BATCHING.md`):
 
 ```sh
-make up                              # starts with Qwen Q2_0; every variant below is served
-make up STRATA_VARIANT=deepseek      # starts with DeepSeek-V4.1-Flash IQ1_M instead
+make up                              # starts with Qwen UD-IQ1_M; every variant below is served
 ```
 
-Request `deepseek-v4.1-flash` (or `deepseek`) to switch to DeepSeek, and any Qwen
-name to switch back; `POST /v1/load {"model": "deepseek"}` switches by hand. Each
-request is read with its own model's tokenizer, chat template and tool-call
-format. A request that names no model goes to the model loaded when it arrives.
+Request a variant's name to switch to it; `POST /v1/load {"model": "q3"}` switches
+by hand. A request that names no model goes to the model loaded when it arrives.
 Only one model runs at a time: each takes the whole GPU and most of the RAM.
-A switch to DeepSeek takes as long as its engine start (it may take up to
-`engine_ready_s`, 3600 s), and Qwen's picture reader stops while DeepSeek runs.
-`make init` downloads and packs DeepSeek too (about 240 GB, below).
+Upstream Strata 0.2.19 removed the DeepSeek-V4.1-Flash engine, so this image no
+longer carries it.
 
 `STRATA_MODEL=<name>` still serves `config/server-<name>.json` alone, with
 `config/model-<name>.json` linked as `/data/model-<name>` and `/data/pack-<name>`.
+
+#### Inkling-2-Mini
+
+Thinking Machines' Inkling-2-Mini runs on its own engine, `strata-inkling`, which the
+image builds next to `strata`. It is served alone, not as a variant of the Qwen
+server: the server reads an engine's family once, when it starts.
+
+```sh
+make init STRATA_MODEL=inkling       # about 15 GB: the SQ-15 build, its picture reader and tokenizer
+make up STRATA_MODEL=inkling
+```
+
+Request model `inkling-2-mini-sq-15` (or `inkling`). Every file comes from
+`strata-engine/Inkling-2-Mini-Strata`, pinned to a commit in `config/model-inkling.json`:
+
+- `Inkling-2-Mini-SQ-15.strata` (14.3 GB), upstream's own build ("flagship quality, beats
+  UD-Q4_K_XL; 100% GPU on 16 GiB cards"). The HIP backend reads only `.strata` files: given
+  Unsloth's GGUF it reads an empty weight section and crashes at start (only the CPU backend
+  reads GGUF). SQ-20 (19.3 GB, the only build with the DSpark drafter embedded) does not fit
+  16 GB of VRAM; SQ-10 (10.5 GB) is the smaller choice.
+- `tokenizer.json` and `chat_template.jinja`, which `make init` turns into the server's
+  tokenizer folder (`tools/inkling_tokenizer.py`). The chat template is not an LFS file, so it
+  is checked against its git blob id.
+- The picture reader, `Inkling-2-Mini-Vision.strata` (0.6 GB).
+
+The context is 32K (`max_context`), upstream's default. Inkling-2-Mini has no thinking
+mode. Before the engine starts, the server asks it (`strata-inkling --info`) whether it
+reads pictures and has a drafter; it adds `--draft dspark` only when it has one, and starts
+without the picture reader (saying so in the log) when it does not read pictures. Measured
+on pc26 on 2026-11-23: about 65 tokens/s answering and 60 tokens/s reading short prompts;
+it reads pictures.
 
 #### Qwen variants
 
@@ -121,50 +150,55 @@ adds its own pack and shards:
 
 | request `model` | variant | files |
 |---|---|---|
-| `qwen3.8-flash-next-q2_0`, `q2`, `qwen`, `qwen3.8-flash-next` | Q2_0 | `config/{model,server}-q2.json` |
-| `qwen3.8-flash-next-iq3_xxs`, `q3` | IQ3_XXS | `config/{model,server}-q3.json` |
-| `qwen3.8-flash-next-coder-iq1_m`, `q1`, `coder`, `qwen3.8-flash-next-coder` | Coder IQ1_M | `config/{model,server}-q1.json` |
-| `qwen3.8-flash-next-iq3_s-slow`, `q3s-slow` | IQ3_S | `config/model-q3s.json`, `config/server-q3s-slow.json` |
-| `qwen3.8-flash-next-iq3_s-fast`, `q3s-fast` | IQ3_S, residency-biased routing | `config/model-q3s.json`, `config/server-q3s-fast.json` |
-| `qwen3.8-flash-next-ud-q4_k_xl-slow`, `q4-slow` | Unsloth UD-Q4_K_XL | `config/model-q4.json`, `config/server-q4-slow.json` |
-| `qwen3.8-flash-next-ud-q4_k_xl-fast`, `q4-fast` | Unsloth UD-Q4_K_XL, residency-biased routing | `config/model-q4.json`, `config/server-q4-fast.json` |
+| `qwen3.8-flash-next-unsloth-ud-iq1_m`, `q1` | Unsloth UD-IQ1_M (Dynamic V3.1) | `config/{model,server}-q1.json` |
+| `qwen3.8-flash-next-ud-iq3_xxs`, `q3` | Unsloth UD-IQ3_XXS (Dynamic V3.1) | `config/{model,server}-q3.json` |
 
-IQ3_S and UD-Q4_K_XL each come as two variants of one engine: `-slow` answers as
-the engine always has, and `-fast` turns on the fork's residency-biased routing
-(`route_prior` 1.5: an expert already in VRAM gets a logit bonus, fewer misses to
-read, answers that differ from `-slow`'s) and lets a request trade more quality
-for speed with its own `"strata_tune"`: `tail_skip` (0-9), `kva` (true/false),
-`route_resident` and `route_resident_ranks` (Strata's `docs/BATCHING.md`, "Variants
-of one engine"). The two differ only in their sampling block, so a switch between
-them restarts nothing and keeps the conversation; they share the download, the
-pack, the load image and one conversation folder (`/data/convcache/<base>-slow`). Their engine runs
-with `STRATA_ROUTE_LIVE=1` (`engine_env.route_live`), which puts both routing
-kernels in every verify graph; with `route_prior` 0 they write nothing, so
-`-slow`'s answers are the bits of an engine without them.
+Both engines run with `STRATA_ROUTE_LIVE=1`
+(`engine_env.route_live`), which puts the fork's routing kernels in every verify
+graph; with `route_prior` 0 (no `"strata_tune"`) they write nothing, so the
+answers are the bits of an engine without them.
 
-The Coder is ISTA-DASLab's expert-pruned release: 256 of each layer's 512 experts
-kept (chosen for code, tool use and pictures), stored at 3.5 bits, with upstream's
-Coder expert profile. Its shard 2 (the n-gram table) is the same file as Q2_0's
-and is hard-linked from it, so it downloads only its 29.6 GB shard 1.
+UD-IQ3_XXS is Unsloth's Dynamic V3.1 file (2026-11-04, 83.6 GB in four shards):
+its experts mix IQ2_S, IQ3_XXS and IQ4_XS gate/up projections with IQ4_NL and
+Q2_0 downs, and its fourth shard is the IQ4_NL n-gram table. It
+is packed with `--compat-bf16` and read from its GGUF shards in place.
+
+UD-IQ1_M (`q1`) is Unsloth's Dynamic V3.1 file from the same revision (68.0 GB in
+three shards; its third shard is the n-gram table). It replaced ISTA-DASLab's Q2_0 on
+2026-11-10 and is packed the same way as UD-IQ3_XXS. Its picture reader is
+ISTA-DASLab's `mmproj-Qwen3.8-Flash-Next-BF16.gguf` (a `sources` entry in
+`config/model-q1.json`). Unsloth's UD-IQ1_S cannot be used: it mixes two expert
+formats in one layer, which Strata refuses.
+
+The Qwen variants draft with DFlash2 alone (`"draft": "dflash2"`, `"draft_fallback": "none"`,
+`"spec": 6`, `"draft_conf": 0.7` in `config/server.json`'s `engine`): the MTP layer is not
+loaded, which leaves about 1 GB more VRAM for the expert cache. `--mtp` stays in the arguments;
+the engine reads only the draft vocabulary from it. Parked conversations stay on disk: the
+fork's engine (branch `dflash2-disk-park`) writes park files without the MTP layer's K/V when
+that layer is not loaded. An engine without that change parks them in RAM instead, and they are
+lost at every switch and restart. `"drafting": "args"` is a fork setting: the server passes
+those options as written instead of Strata's own choice. A DFlash2 that cannot start ends the
+start with an error (there is no MTP to fall back to); q1's start is then retried with the MTP
+alone. `make init` fetches the drafter once, into `/data/dflash2` (`"dflash2": true` in
+`config/model-q1.json`: about 1.2 GB downloaded, 0.52 GB kept). DFlash2 is not measured on gfx1101. To keep the MTP layer as the fallback, set
+`"draft_fallback": "mtp"`; to go back to the MTP alone, set `"drafting": "mtp"`, remove the five
+`draft*` options and set `"spec"` back to 4.
+UD-IQ1_M is not measured on pc26 yet;
+the Q2_0 numbers below are kept for comparison.
 
 Another model name is served by whichever variant is loaded. A switch takes
 about as long as an engine start, about 8 s with load images (below); the scheduler keeps a variant loaded while
 its requests are queued and switches once a request for another has waited
 `model_max_wait_s` (120 s). There is no default variant: the server starts with
-`q2` (the first listed, or `STRATA_VARIANT`) and stays on whichever is loaded
+`q1` (the first listed, or `STRATA_VARIANT`) and stays on whichever is loaded
 (`"default_model"` with `"default_idle_s"` would switch back to one when idle).
 Each variant parks its conversations in its own folder, `/data/convcache/<variant>`
 (the server derives them from the common `/data/convcache`), and they survive a
 switch: the outgoing engine parks the conversation it holds as it stops, and the
 variant's next request goes on from that file. No session file is written
 (`"model_session_dir": false`). `make up STRATA_VARIANT=q3`
-starts with IQ3_XXS, and `POST /v1/load {"model": "q3"}` switches by hand.
-`make init` downloads and packs every variant (IQ3_XXS: 76 GB more, the Coder: 29.6 GB more, IQ3_S: 110 GB more; its second shard, the per-layer table, is shared with Q2_0).
-UD-Q4_K_XL (Unsloth's 4-bit file, 111.3 GB) is packed with `--compat-bf16` and
-read from its GGUF shards in place (no `experts.bin`). Its 71.7 GiB of experts
-are twice IQ3_S's, so on pc26 (32 GB of RAM) 44 GiB of them are read from the SSD:
-measured 2026-11-02, it answers at 8-11 tokens/s (IQ3_S: 19-24) and reads prompts
-at 690-810 tokens/s (IQ3_S: 930-1150).
+starts with UD-IQ3_XXS, and `POST /v1/load {"model": "q3"}` switches by hand.
+`make init` downloads and packs every variant (UD-IQ3_XXS: 83.6 GB more).
 
 Each variant keeps a load image in `/data/load-image/<variant>` (the fork's
 `STRATA_LOAD_IMAGE`): its GPU expert cache and RAM experts as two files in the
@@ -187,7 +221,8 @@ fit in pc26's RAM beside the GPU's share (33 GB outside VRAM, against Q2_0's
 | prompt reading, 29-34K tokens | 987 tokens/s | 919 tokens/s |
 | answer speed | 43 tokens/s | 18-20 tokens/s |
 
-Measured on pc26 on 2026-10-25. IQ3_XXS with Q2_0's earlier settings (its whole
+Measured on pc26 on 2026-10-25, with ISTA-DASLab's IQ3_XXS (the `q3` variant until
+UD-IQ3_XXS replaced it on 2026-11-05; UD-IQ3_XXS is not measured yet). IQ3_XXS with Q2_0's earlier settings (its whole
 remainder page-locked, the rest read through the page cache, 2048-token chunks)
 re-read the experts several times over per prompt chunk and read prompts at
 about 30 tokens/s. Q2_0 with every expert in RAM read 832 tokens/s with
@@ -195,24 +230,32 @@ about 30 tokens/s. Q2_0 with every expert in RAM read 832 tokens/s with
 reader and session saves; the 22 GiB budget keeps about 5 GB free. Larger
 budgets answer faster on IQ3_XXS (26 GiB: 25 tokens/s) but leave no RAM free.
 
-DeepSeek-V4.1-Flash (ISTA-DASLab's 1.75 bpw set, 200000 context, the `deepseek` variant) is upstream
-Strata's `strata-dsv41` engine, built here for gfx1101 although upstream ships
-it for gfx12 only (its kernel tests pass on gfx1101). It needs about 240 GB of
-disk: the shards, the 111 GB n-gram table read from the SSD while it answers,
-the DSpark drafter (left unloaded on this card) and a metadata shard of Unsloth's
-set. Its settings are upstream's tuned defaults: the tuner found nothing faster
-on pc26. Request model `deepseek-v4.1-flash`. Thinking is on by default
-(`reasoning_effort: "none"` turns it off). Measured on pc26 through the API on
-2026-10-25 against Qwen in its configuration (greedy, thinking off):
+### As a systemd service (Quadlet)
 
-| | DeepSeek IQ1_M | Qwen Q2_0 |
-|---|---|---|
-| answer speed | 4.4-5.7 tokens/s | 55-63 tokens/s |
-| prompt reading, 8K / 28K / 58K tokens | 147 / 220 / 235 tokens/s | 839 / 853 / 1140 tokens/s |
-| next turn of a 58K-token conversation | 9.5 s to the first token | 0.55 s |
+On the machine itself, the server can run as a Podman Quadlet unit of your user's systemd manager instead of a
+compose container. It then starts at boot (with `loginctl enable-linger`) and restarts when it fails:
 
-With 32 GB of RAM most of its 115 GB of experts are read from the SSD, so it
-is for occasional questions rather than agents.
+```sh
+make init                            # credentials, config volume, image and models, as for make up
+make down                            # the compose server, if it runs: the unit uses the same port
+make quadlet                         # write ~/.config/containers/systemd/strata-local-server.container
+systemctl --user start strata-local-server
+```
+
+`make quadlet` only installs the unit (it reloads systemd but starts nothing); manage the server with
+`systemctl --user start|stop|restart|status strata-local-server`, its log with `podman logs -f strata-local-server`.
+The unit is `quadlet/strata-local-server.container.in`, filled in with `STRATA_BIND_ADDRESS`, `STRATA_PORT`,
+`STRATA_MODEL`, `STRATA_VARIANT` and `STRATA_GPU` (for example `STRATA_VARIANT=q3 make quadlet`); run `make quadlet`
+again after changing them, then restart. A restart makes a fresh container, so it also picks up a rebuilt image and
+`make config`. The unit uses the same image, credentials, `strata-local-config` volume, model volume
+(`strata-local_strata-data`) and port as `make up`: stop it before `make up`, `make calibrate`, `make tune` or a build.
+The model initializer is not part of the unit (it asks Hugging Face on every run), so a start at boot serves the models
+already prepared. Systemd cannot `enable` or `disable` a generated unit; to stop it starting at boot, run
+`make quadlet-uninstall`, which stops the server and removes the unit (the volumes, image and credentials stay). `make quadlet` refuses to run with `CONTAINER_CONNECTION` set:
+the unit has to be installed on the remote host itself.
+
+The unit asks for an unlimited memlock limit, which rootless Podman lowers to your user manager's hard limit. Check
+it with `systemctl show user@$(id -u).service -p LimitMEMLOCK`, and raise it as described for the service user below.
 
 ### Remote host
 
@@ -228,8 +271,8 @@ STRATA_BIND_ADDRESS=0.0.0.0 HIP_ARCHITECTURES=gfx1101 make up
 make logs
 ```
 
-Builds upload this checkout as the build context and compile on the remote
-host, so set `HIP_ARCHITECTURES` for its GPU. `make up` also imports `config/`
+Builds upload the Strata checkout (`STRATA_SRC`, its working tree) and this
+directory as the build contexts and compile on the remote host, so set `HIP_ARCHITECTURES` for its GPU. `make up` also imports `config/`
 into the remote `strata-local-config` volume. `STRATA_BIND_ADDRESS`
 names a remote host address; without it the server is reachable only from the
 remote host itself. `make secrets` decrypts the credentials here
@@ -289,7 +332,7 @@ key is an option without its dashes, `-` written as `_`
 (`"conversation_cache_mib": 16384` is `--conversation-cache-mib 16384`); `true`
 is a bare flag (`"resident_experts": true`), and `false` or `null` leaves the
 option out. `engine_env` does the same for the engine's `STRATA_` environment
-variables (`"load_image": "/data/load-image/q2"` is `STRATA_LOAD_IMAGE`; `true`
+variables (`"load_image": "/data/load-image/q1"` is `STRATA_LOAD_IMAGE`; `true`
 is `1`). Our fork's server expands both as it reads the config, in the common
 file and in each variant's, into the `args` and `env` the engine starts with. A
 variant's option replaces the common one of the same name. Raw `args` and `env`
@@ -297,14 +340,19 @@ still work beside them, but naming an option in both is an error. Keep top-level
 `max_context` and `engine.max_context` consistent. Contexts above 262144 require
 explicit rope scaling configured in Strata.
 
+`engine_env.hip_fast_dec` is `0`: Strata 0.2.19 turns `STRATA_HIP_FAST_DEC` on by
+default on gfx11 (its `rdna_mmvq` and `rdna_gr` decode kernels), and with it both
+Unsloth UD-IQ1_M and UD-IQ3_XXS answered garbage from the first token on pc26
+(2026-11-23). The other gfx11 defaults it lists at start stay on.
+
 Sampling is per model: each variant's file has its own `sampling` (the defaults
 for the fields a request leaves out; a request's own values win), and the common
 `config/server.json` has none. A key the common file did set would be the default
-for every variant that leaves it out. All four Qwen variants start with the
+for every variant that leaves it out. Both Qwen variants start with the
 model card's thinking set (temperature 1.0, top_p 0.95, top_k 20).
 
 The scheduler settings are listed in `config/server.json` with Strata's default
-values, so they can be tuned in place (see upstream `serve/turns.py` and
+values, so they can be tuned in place (see upstream `terminal/serve/turns.py` and
 `docs/BATCHING.md`): `turn_slice_s` (300: the engine time a conversation keeps
 the turn while others wait), `turn_max_wait_s` (the longest a request waits),
 `turn_hold_s` (how long the turn waits for a tool call's follow-up),
@@ -424,14 +472,22 @@ Compose accepts these environment overrides (or an ignored `.env` file):
 | `HIP_ARCHITECTURES` | `gfx1101` | Image build target |
 | `BUILD_JOBS` | `8` | Parallel compile jobs; lower it to limit compiler memory use |
 | `STRATA_VERIFY_EXISTING` | `0` | Set to `1` to checksum existing GGUFs during initialization |
+| `STRATA_SRC` | `../Strata` | The Strata checkout the image is built from |
 
-The image builds Strata from our fork,
-[UltimateBoomer/Strata](https://github.com/UltimateBoomer/Strata), at the commit
-in the `Containerfile`'s `STRATA_REVISION`: upstream
-[Niko1221/Strata](https://github.com/Niko1221/Strata) v0.2.2 plus the disk-backed
-conversation cache described above. To change the engine, push a commit to the fork and update
-`STRATA_REVISION` (or pass `--build-arg STRATA_REVISION=...`). The llama.cpp
-commit is the one that Strata revision pins in `third_party/ggml/VERSION.txt`.
+This repository is the deployment of our fork,
+[UltimateBoomer/Strata](https://github.com/UltimateBoomer/Strata) (upstream
+[Niko1221/Strata](https://github.com/Niko1221/Strata) plus the features described
+above). It lived in the fork at `deploy/local/` for a while and is separate again:
+the fork holds the source, this repository the image recipe, configs and scripts.
+The image builds the checkout at `STRATA_SRC` (default `../Strata`) as its working tree is, uncommitted
+changes included, so a change is tested with `make up` before it is committed or
+pushed. The `Containerfile` copies the engine's sources (`engine/`, and the
+picture reader's `terminal/tools/vision/`) before compiling them and the rest of
+the tree after, so a change to the server (`terminal/`) or the console rebuilds in
+seconds and only an engine change recompiles. The image is labelled with the
+commit (`org.opencontainers.image.revision`, `-dirty` for uncommitted changes) and
+the last commit to the engine's sources (`org.strata.engine-sources`). The
+llama.cpp commit is the one the checkout pins in `engine/third_party/ggml/VERSION.txt`.
 The ROCm 7.0.2 development image tag is not digest pinned.
 hipBLAS, rocBLAS and hipBLASLt development packages are
 installed inside the image; the base image's HIP compiler alone is insufficient
@@ -473,9 +529,9 @@ prepared model:
 make calibrate
 ```
 
-This stops the Strata server and runs upstream `tools/calibrate.py` against the
+This stops the Strata server and runs upstream `terminal/tools/calibrate.py` against the
 served model's run config (for the Qwen variants, `config/server.json` with the
-variant's own file over it: `STRATA_VARIANT`, default `q2`) in a temporary
+variant's own file over it: `STRATA_VARIANT`, default `q1`) in a temporary
 container with the same GPU and model mounts.
 Stop other GPU inference servers first. Calibration measures PCIe share, draft
 confidence, CPU worker count, and adaptive expert-cache settings; it can take

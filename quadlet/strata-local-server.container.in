@@ -1,0 +1,40 @@
+# The strata-server service of compose.yaml as a Podman Quadlet unit, run by this user's systemd manager (started at
+# boot with lingering). make quadlet fills in the @...@ values and writes it to ~/.config/containers/systemd/; make
+# quadlet-uninstall removes it. The model initializer is not part of the unit (make init runs it), so a start at boot
+# does not depend on Hugging Face being reachable.
+[Unit]
+Description=Strata local server (strata-local)
+
+[Container]
+ContainerName=strata-local-server
+Image=localhost/strata-local:hip
+# The image is built here (make build), never pulled.
+Pull=never
+# The compose project's volume, so the downloaded and packed models are shared with make up.
+Volume=strata-local_strata-data:/data
+Volume=strata-local-config:/config:ro
+AddDevice=/dev/kfd
+AddDevice=/dev/dri
+SecurityLabelDisable=true
+Ulimit=memlock=-1:-1
+PublishPort=@STRATA_BIND_ADDRESS@:@STRATA_PORT@:8080
+Environment=STRATA_MODEL=@STRATA_MODEL@
+Environment=STRATA_VARIANT=@STRATA_VARIANT@
+Environment=HIP_VISIBLE_DEVICES=@STRATA_GPU@
+Secret=strata-local-api-key,target=strata_api_key
+LogDriver=k8s-file
+# The engine parks the conversation it holds as it stops; the server allows it 20 s.
+StopTimeout=60
+HealthCmd=python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5)"
+HealthInterval=30s
+HealthTimeout=10s
+HealthStartPeriod=600s
+HealthRetries=3
+
+[Service]
+Restart=always
+TimeoutStartSec=900
+TimeoutStopSec=90
+
+[Install]
+WantedBy=default.target

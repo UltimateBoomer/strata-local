@@ -20,7 +20,7 @@ def main():
     # The server reads /config itself ("engine" and "engine_env" fields included: the fork's serve/engine_fields.py),
     # so the web page's Config view edits and applies these very files.
     os.environ['STRATA_API_KEY'] = key
-    os.chdir('/opt/strata')
+    os.chdir('/opt/strata/terminal')
     os.execv(sys.executable, [sys.executable, '-m', 'serve.server',
                             '--engine', 'strata', '--config', str(config),
                             '--host', '0.0.0.0', '--port', '8080'])

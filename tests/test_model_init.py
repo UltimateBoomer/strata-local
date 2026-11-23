@@ -3,7 +3,6 @@ import importlib.util
 import json
 import os
 from pathlib import Path
-import sys
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -11,13 +10,6 @@ from unittest.mock import Mock, patch
 spec = importlib.util.spec_from_file_location('model_init', Path(__file__).parents[1] / 'scripts/model-init.py')
 init = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(init)
-sys.path.insert(0, str(Path(__file__).parents[1] / 'scripts'))
-import engine_config  # noqa: E402
-
-
-def server_config(path):
-    """A server config as Strata reads it: its "engine" fields as "args" (engine_config.py)."""
-    return engine_config.expand(json.loads(path.read_text()))
 
 
 class PreparationTests(unittest.TestCase):
@@ -89,52 +81,18 @@ class PreparationTests(unittest.TestCase):
                 init.download(session, 'https://example.com/model', dst, 6, 'unused')
             session.get.assert_not_called()
 
-    def test_native_config_uses_stable_artifact_paths(self):
-        root = Path(__file__).parents[1]
-        cfg = server_config(root / 'config/server.json')
-        self.assertNotIn('parallel', cfg, 'model variants run one request at a time')
-        self.assertEqual(cfg['tokenizer'], '/data/pack-q2/tokenizer', 'the variants share the tokenizer')
-        self.assertIn('--max-context', cfg['args'])
-        q2 = json.loads((root / 'config/model-q2.json').read_text())
-        self.assertEqual(cfg['vision']['mmproj'], '/data/model-q2/' + q2['vision_file'])
-        self.assertEqual(cfg['vision']['model'], '/data/model-q2/' + Path(q2['files'][0]).name)
-        for name, file in cfg['models'].items():
-            if 'arch' in json.loads((root / 'config' / file).read_text()):
-                continue                                # another model family (DeepSeek): its own test below
-            with self.subTest(variant=name):
-                variant = server_config(root / 'config' / file)
-                name = init.variant_model(root / 'config', name, file)   # q3s-fast, q3s-slow: q3s's files
-                model = json.loads((root / f'config/model-{name}.json').read_text())
-                init.model_files(model)
-                args = variant['args']
-                self.assertEqual(args[args.index('--pack') + 1], f'/data/pack-{name}')
-                # Strata finds PLE in the native shards; an alias would duplicate shard 2.
-                self.assertNotIn('--ple-gguf', args + cfg['args'])
-                self.assertEqual(args[args.index('--native') + 1],
-                                 f'/data/model-{name}/' + Path(model['files'][0]).name)
-                self.assertEqual(args[args.index('--mtp') + 1], f'/data/pack-{name}/mtp/rt')
-                # the model's own files and the expert placement its size needs (the GPU cache, the RAM copy,
-                # the prompt chunk) are per variant
-                for flag in ('--pack', '--native', '--mtp', '--expert-profile', '--expert-cache', '--prefill'):
-                    self.assertNotIn(flag, cfg['args'], 'set per variant')
-                for flag in ('--expert-cache', '--prefill'):
-                    self.assertIn(flag, args)
-                # (another repository's variant, Unsloth's, downloads none: the reader is Q2_0's)
-                self.assertEqual(model.get('vision_file', q2['vision_file']), q2['vision_file'],
-                                 'the variants share the picture reader')
-
     def test_variants_are_prepared_with_their_own_links(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / 'server.json').write_text(json.dumps({'models': {'q2': 'server-q2.json', 'q3': 'server-q3.json'}}))
-            (root / 'server-deepseek.json').write_text(json.dumps({'exe': 'x'}))
+            (root / 'server-coder.json').write_text(json.dumps({'exe': 'x'}))
 
             def path(kind, model):
                 return root / (f'{kind}.json' if model == 'qwen' else f'{kind}-{model}.json')
             with patch.object(init, 'config_path', path):
                 self.assertEqual(init.models_to_prepare('qwen'),
                                  [(root / 'model-q2.json', '-q2'), (root / 'model-q3.json', '-q3')])
-                self.assertEqual(init.models_to_prepare('deepseek'), [(root / 'model-deepseek.json', '-deepseek')])
+                self.assertEqual(init.models_to_prepare('coder'), [(root / 'model-coder.json', '-coder')])
 
     def test_variants_of_one_model_share_its_download(self):
         """Variants whose pack is one model's (/data/pack-q3s) prepare that model once, under its own name."""
@@ -307,27 +265,49 @@ class PreparationTests(unittest.TestCase):
 
     def test_model_selection_picks_the_config_pair(self):
         self.assertEqual(init.config_path('model', 'qwen'), Path('/config/model.json'))
-        self.assertEqual(init.config_path('model', 'deepseek'), Path('/config/model-deepseek.json'))
+        self.assertEqual(init.config_path('model', 'coder'), Path('/config/model-coder.json'))
         for bad in ('', '../x', 'Deep', 'a/b'):
             with self.subTest(model=bad), self.assertRaises(SystemExit):
                 init.config_path('server', bad)
 
-    def test_deepseek_config_uses_stable_artifact_paths(self):
-        root = Path(__file__).parents[1]
-        cfg = server_config(root / 'config/server-deepseek.json')
-        model = json.loads((root / 'config/model-deepseek.json').read_text())
-        init.model_files(model)
-        args = cfg['args']
-        self.assertEqual(cfg['tokenizer'], '/data/pack-deepseek/tokenizer')
-        self.assertEqual(args[args.index('--pack') + 1], '/data/pack-deepseek')
-        self.assertIn('--max-context', args)
-        # the pack names every downloaded shard; the model files are all in one folder
-        pack = model['prepare'][0]
-        shards = pack[pack.index('--shards') + 1:pack.index('--engram')]
-        self.assertEqual(shards, [f for f in model['files'] if '-of-' in f])
-        names = {Path(f).name for f in model['files'] + model['sources'][0]['files']}
-        for flag in ('--engram', '--engram-meta', '--dspark-gguf'):
-            self.assertIn(pack[pack.index(flag) + 1].removeprefix('{model}/'), names)
+    def test_git_blob_id_is_git_hash_object(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / 'chat_template.jinja'
+            f.write_bytes(b'hello\n')
+            self.assertEqual(init.git_blob_id(f), 'ce013625030ba8dba906f756967f9e9ca394464a')   # git hash-object
+
+    def test_file_outside_lfs_is_checked_by_its_blob_id(self):
+        """A small file Hugging Face keeps outside LFS (a chat template) is pinned by its git blob id and size."""
+        blob = 'ce013625030ba8dba906f756967f9e9ca394464a'
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Mock()
+            session.get.return_value = self.response(b'hello\n')
+            metadata = {'sha': 'a' * 40, 'siblings': [{'rfilename': 't.jinja', 'blobId': blob, 'size': 6}]}
+            init.fetch(session, 'owner/model', metadata, ['t.jinja'], Path(tmp))
+            self.assertEqual((Path(tmp) / 't.jinja').read_bytes(), b'hello\n')
+            session.get.return_value = self.response(b'hellO\n')
+            with self.assertRaisesRegex(RuntimeError, 'verification'):
+                init.fetch(session, 'owner/model', {**metadata, 'siblings': [{**metadata['siblings'][0], 'rfilename': 'u.jinja'}]},
+                           ['u.jinja'], Path(tmp))
+            self.assertFalse((Path(tmp) / 'u.jinja').exists())
+            with self.assertRaisesRegex(ValueError, 'git blob'):
+                init.fetch(session, 'owner/model', {'sha': 'a' * 40, 'siblings': [{'rfilename': 'v.jinja'}]}, ['v.jinja'],
+                           Path(tmp))
+
+    def test_inkling_configs_agree(self):
+        """config/model-inkling.json downloads what config/server-inkling.json starts: the engine's files are the model
+        folder's (/data/model-inkling) and the tokenizer is the one the preparation writes (/data/pack-inkling)."""
+        config = Path(__file__).parents[1] / 'config'
+        model = json.loads((config / 'model-inkling.json').read_text())
+        server = json.loads((config / 'server-inkling.json').read_text())
+        names = {Path(f).name for f in init.model_files(model)}
+        for key in ('native', 'vision'):
+            path = Path(server['engine'][key])
+            self.assertEqual(path.parent, Path('/data/model-inkling'), key)
+            self.assertIn(path.name, names, key)
+        self.assertEqual(server['tokenizer'], '/data/pack-inkling/tokenizer')
+        self.assertIn('{pack}/tokenizer', model['prepare'][0])
+        self.assertEqual(init.config_path('model', 'inkling'), Path('/config/model-inkling.json'))
 
 
 if __name__ == '__main__':

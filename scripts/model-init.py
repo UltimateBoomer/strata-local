@@ -11,7 +11,7 @@ from urllib.parse import quote
 
 import requests
 
-ROOT = Path('/opt/strata')
+ROOT = Path('/opt/strata/terminal')   # the Terminal's tree: tools/, data/, strata.py
 DATA = Path('/data')
 
 
@@ -23,12 +23,23 @@ def digest(path):
     return h.hexdigest()
 
 
-def download(session, url, target, size, sha):
-    """Reuse existing files by size; always verify downloads before publication."""
+def git_blob_id(path):
+    """The git blob id (SHA-1 of "blob <size>\\0" and the bytes): what Hugging Face pins a file that is not in LFS by
+    (a small text file such as a chat template)."""
+    h = hashlib.sha1(b'blob %d\0' % path.stat().st_size)
+    with path.open('rb') as src:
+        for block in iter(lambda: src.read(8 * 1024 * 1024), b''):
+            h.update(block)
+    return h.hexdigest()
+
+
+def download(session, url, target, size, sha, check=digest):
+    """Reuse existing files by size; always verify downloads before publication.  `check` makes the hash `sha` is
+    compared with (digest: SHA-256 for LFS files; git_blob_id for the others)."""
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists():
         verify = os.environ.get('STRATA_VERIFY_EXISTING', '0') == '1'
-        if target.stat().st_size == size and (not verify or digest(target) == sha):
+        if target.stat().st_size == size and (not verify or check(target) == sha):
             print(f'{"Verified" if verify else "Reusing"} {target.name}', flush=True)
             return
         raise RuntimeError(f'{target} failed verification; remove it and retry')
@@ -47,7 +58,7 @@ def download(session, url, target, size, sha):
             with partial.open('ab' if offset else 'wb') as out:
                 for block in response.iter_content(8 * 1024 * 1024):
                     out.write(block)
-    if partial.stat().st_size != size or digest(partial) != sha:
+    if partial.stat().st_size != size or check(partial) != sha:
         raise RuntimeError(f'{partial} failed verification; remove it and retry')
     partial.replace(target)
 
@@ -105,6 +116,14 @@ def prepare(cfg, folder, pack):
     complete.write_text('complete\n')
 
 
+def fetch_dflash2():
+    """The DFlash2 drafter, for a model config with "dflash2": true: Strata's own pinned, checked fetch into
+    /data/dflash2, where the server looks for it (strata_control/drafting.py data_dir_of: the variant's
+    /data/pack-<name> link resolves to /data/packs/<id>). A drafter already there is kept."""
+    subprocess.run([sys.executable, str(ROOT / 'strata.py'), 'drafting', 'fetch', '--data-dir', str(DATA)],
+                   cwd=ROOT, check=True)
+
+
 def reuse_cached_file(target, filename, info):
     """Link a file another model folder already holds (an older cache layout, or the same blob under another name:
     the Coder's shard 2 is Q2_0's) without copying large files."""
@@ -148,13 +167,21 @@ def fetch(session, repository, metadata, files, folder):
     for filename in files:
         if filename not in entries:
             raise ValueError(f'Model file not found in repository: {filename}')
-        info = entries[filename].get('lfs')
-        if not info or not info.get('sha256') or 'size' not in info:
-            raise ValueError(f'Model file requires LFS size and SHA-256 metadata: {filename}')
+        entry = entries[filename]
+        info = entry.get('lfs')
+        url = f"{base}/resolve/{metadata['sha']}/{quote(filename, safe='/')}"
         target = folder / Path(filename).name
+        if not info:
+            # a file outside LFS (a chat template): pinned by its git blob id and size at the resolved revision
+            blob, size = entry.get('blobId'), entry.get('size')
+            if not isinstance(blob, str) or not re.fullmatch(r'[0-9a-f]{40}', blob) or not isinstance(size, int):
+                raise ValueError(f'Model file requires LFS or git blob size and hash metadata: {filename}')
+            download(session, url, target, size, blob, check=git_blob_id)
+            continue
+        if not info.get('sha256') or 'size' not in info:
+            raise ValueError(f'Model file requires LFS size and SHA-256 metadata: {filename}')
         reuse_cached_file(target, filename, info)
-        download(session, f"{base}/resolve/{metadata['sha']}/{quote(filename, safe='/')}",
-                 target, info['size'], info['sha256'])
+        download(session, url, target, info['size'], info['sha256'])
 
 
 def initialize(cfg, session, suffix=''):
@@ -178,9 +205,10 @@ def initialize(cfg, session, suffix=''):
         fetch(session, source['repository'], source_metadata, source['files'], folder)
     (folder / 'manifest.json').write_text(json.dumps(metadata, indent=2) + '\n')
     prepare(cfg, folder, pack)
+    if cfg.get('dflash2'):
+        fetch_dflash2()
     # Each model has its own links (the default model /data/model and /data/pack, another /data/model-<name> and
-    # /data/pack-<name>): an engine still running another model never writes through them (DeepSeek saves its
-    # expert profile into its pack when it stops).
+    # /data/pack-<name>): an engine still running another model never writes through them.
     for name, target in (('model' + suffix, folder), ('pack' + suffix, pack)):
         link = DATA / name
         temporary = DATA / (name + '.tmp')
