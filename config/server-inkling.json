@@ -1,19 +1,21 @@
 {
-  "exe": "/opt/strata/engine/strata-inkling",
+  "exe": "/opt/strata/engine/strata-poly",
+  "args": [
+    "--model",
+    "/data/model-inkling/Inkling-2-Mini-UD-Q4_K_XL.gguf",
+    "--max-context",
+    "32768",
+    "--expert-profile",
+    "/data/pack-inkling/expert-profile.txt",
+    "--kv-whole"
+  ],
   "cwd": "/opt/strata/terminal",
-  "arch": "inkling2_loop",
   "tokenizer": "/data/pack-inkling/tokenizer",
-  "backend": "hip",
-  "model_name": "inkling-2-mini-sq-15",
+  "model_name": "inkling-2-mini-ud-q4_k_xl",
+  "display_name": "Inkling 2 Mini UD-Q4_K_XL",
   "aliases": [
     "inkling"
   ],
   "log": "/data/strata-inkling.log",
-  "drafting": "dspark",
-  "parallel": 1,
-  "engine": {
-    "native": "/data/model-inkling/Inkling-2-Mini-SQ-15.strata",
-    "vision": "/data/model-inkling/Inkling-2-Mini-Vision.strata",
-    "max_context": 32768
-  }
+  "parallel": 1
 }

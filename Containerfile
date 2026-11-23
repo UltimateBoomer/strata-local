@@ -1,7 +1,9 @@
 ARG ROCM_IMAGE=docker.io/rocm/dev-ubuntu-24.04:7.0.2
 FROM $ROCM_IMAGE
 
-# This checkout, our fork of Niko1221/Strata: upstream v0.2.19 plus the disk-backed conversation cache (park files updated in place, read back by streaming, borrowed from), the turn slice (a conversation keeps the engine between its tool calls) and request priorities (fair share in bands, preemption) and model variants (one server switches between quantizations of one model, and between model families) and load images (a variant's expert load kept in load order on disk, read sequentially) and sessions (a request names its conversation; only sessions' turns are parked, a client yields and drops by request) and parked conversations kept across restarts and variant switches (one budget for every variant's files) and a web console at / in place of the chat page (the turn scheduler, the variants and each parked conversation on the Monitor) and engine settings per request (strata_tune: tail_skip, kva, route_prior, route_resident; variants of one engine switched without a restart).
+# The PolyStrata checkout (our fork of simplexai-labs/PolyStrata, its inkling-amd branch: Inkling 2 Mini on AMD), which is
+# upstream Strata 0.2.19 plus PolyStrata's own engine, strata-poly, and its server: Qwen3.8-Flash-Next on Strata's
+# engine (strata), Inkling 2 Mini on strata-poly, one server that switches between them on request.
 ARG HIP_ARCHITECTURES=gfx1101
 ARG BUILD_JOBS=8
 # The BLAS development packages the base image lacks; ROCm 10's -full images already carry them (as amdrocm-*).
@@ -30,9 +32,8 @@ RUN python3 -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir -r terminal/requirements.txt -r terminal/requirements-build.txt
 ENV PATH=/opt/venv/bin:/opt/rocm/bin:$PATH \
     STRATA_GGUF_PY=/opt/llama.cpp/gguf-py
-# The engine's sources (engine/: its CMake, include/, src/, tests/ and third_party/). The built programs go into
-# engine/ beside them (/opt/strata/engine/strata: the run configs' "exe"), with strata-inkling, the Inkling-2-Mini
-# engine (config/server-inkling.json), built for the same architectures (STRATA_HIP_ARCHS).
+# The engines' sources (engine/: its CMake, include/, src/, tests/ and third_party/). The built programs go into
+# engine/ beside them (/opt/strata/engine/strata and strata-poly: the run configs' "exe").
 # engine/'s CMake also reads two of the Terminal's folders: tools/hip (the BLAS tuners) and tools/vision (its HIP kernels).
 COPY engine engine/
 COPY terminal/tools/hip terminal/tools/hip/
@@ -45,9 +46,22 @@ RUN cmake -S engine -B build-hip -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_HIP_ARCHITECTURES="$HIP_ARCHITECTURES" \
     -DSTRATA_GGML_DIR=/opt/llama.cpp \
     -DSTRATA_HIP_ARCHS="$HIP_ARCHITECTURES" \
-    && cmake --build build-hip --target strata strata-inkling tune_hipblaslt -j "$BUILD_JOBS" \
-    && cp build-hip/strata build-hip/tune_hipblaslt build-hip/src/inkling2/strata-inkling engine/ \
-    && rm -rf build-hip /opt/llama.cpp/.git
+    && cmake --build build-hip --target strata tune_hipblaslt -j "$BUILD_JOBS" \
+    && cp build-hip/strata build-hip/tune_hipblaslt engine/ \
+    && rm -rf build-hip
+# strata-poly, PolyStrata's engine (Inkling 2 Mini: config/server-inkling.json), configured as PolyStrata's setup builds
+# it for an AMD card (setup.py's build_engine_poly_hip), in a tree of its own.
+RUN B=/opt/rocm/lib/llvm/amdgcn/bitcode; [ -d "$B" ] || B=/opt/rocm/amdgcn/bitcode; \
+    cmake -S engine -B build-poly -DCMAKE_BUILD_TYPE=Release \
+    -DSTRATA_ENABLE_HIP=ON -DSTRATA_ENABLE_CUDA=OFF -DSTRATA_BUILD_TESTS=OFF -DSTRATA_PORTABLE=ON \
+    -DCMAKE_HIP_ARCHITECTURES="$HIP_ARCHITECTURES" \
+    -DCMAKE_HIP_COMPILER=/opt/rocm/llvm/bin/clang++ -DCMAKE_HIP_COMPILER_ROCM_ROOT=/opt/rocm \
+    -DCMAKE_PREFIX_PATH=/opt/rocm \
+    "-DCMAKE_HIP_FLAGS=-isystem /opt/rocm/include --rocm-path=/opt/rocm --rocm-device-lib-path=$B" \
+    -DSTRATA_GGML_DIR=/opt/llama.cpp \
+    && cmake --build build-poly --target strata-poly -j "$BUILD_JOBS" \
+    && cp build-poly/strata-poly engine/ \
+    && rm -rf build-poly /opt/llama.cpp/.git
 # The picture reader's sources are the Terminal's (terminal/tools/vision, copied above).
 RUN cmake -S terminal/tools/vision -B build-vision -DCMAKE_BUILD_TYPE=Release \
     -DLLAMA_DIR=/opt/llama.cpp -DSTRATA_VISION_CUDA=OFF -DSTRATA_PORTABLE=ON \
@@ -56,10 +70,11 @@ RUN cmake -S terminal/tools/vision -B build-vision -DCMAKE_BUILD_TYPE=Release \
     && rm -rf build-vision
 # The engine has no RUNPATH; ROCm 10's images, unlike ROCm 7's, do not register /opt/rocm/lib with the loader.
 RUN echo /opt/rocm/lib > /etc/ld.so.conf.d/zz-strata-rocm.conf && ldconfig \
-    && ldd engine/strata engine/strata-inkling | (! grep 'not found')
+    && ldd engine/strata engine/strata-poly | (! grep 'not found')
 # The rest of the tree: the server (terminal/serve), the Terminal's modules it imports, and the model preparation tools.
 COPY . ./
-COPY --from=local scripts/model-init.py scripts/serve.py scripts/calibrate.py scripts/tune-hipblaslt.sh \
+COPY --from=local scripts/model-init.py scripts/serve.py scripts/engine_config.py scripts/run_configs.py \
+    scripts/calibrate.py scripts/tune-hipblaslt.sh \
     /usr/local/lib/strata-local/
 ARG STRATA_COMMIT=unknown
 # STRATA_BUILD_ID: the last commit to the engine's sources (the Makefile's ENGINE_SOURCES)

@@ -35,8 +35,6 @@ class ExpandTests(unittest.TestCase):
         config = Path(__file__).parents[1] / 'config'
         main = json.loads((config / 'server.json').read_text())
         self.assertIn('--max-context', engine_config.expand(main)['args'])
-        for variant in main['models'].values():
-            self.assertIn('--pack', engine_config.expand(json.loads((config / variant).read_text()))['args'])
 
 
 

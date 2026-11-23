@@ -295,19 +295,28 @@ class PreparationTests(unittest.TestCase):
                            Path(tmp))
 
     def test_inkling_configs_agree(self):
-        """config/model-inkling.json downloads what config/server-inkling.json starts: the engine's files are the model
-        folder's (/data/model-inkling) and the tokenizer is the one the preparation writes (/data/pack-inkling)."""
+        """config/model-inkling.json downloads what config/server-inkling.json starts: the GGUF under its local name in
+        the model folder (/data/model-inkling) and the tokenizer the preparation writes (/data/pack-inkling)."""
         config = Path(__file__).parents[1] / 'config'
         model = json.loads((config / 'model-inkling.json').read_text())
         server = json.loads((config / 'server-inkling.json').read_text())
-        names = {Path(f).name for f in init.model_files(model)}
-        for key in ('native', 'vision'):
-            path = Path(server['engine'][key])
-            self.assertEqual(path.parent, Path('/data/model-inkling'), key)
-            self.assertIn(path.name, names, key)
+        names = {init.local_name(model, f) for f in init.model_files(model)}
+        gguf = Path(server['args'][server['args'].index('--model') + 1])
+        self.assertEqual(gguf.parent, Path('/data/model-inkling'))
+        self.assertIn(gguf.name, names)
+        self.assertTrue(gguf.name.endswith('.gguf'))
         self.assertEqual(server['tokenizer'], '/data/pack-inkling/tokenizer')
-        self.assertIn('{pack}/tokenizer', model['prepare'][0])
+        self.assertIn('{pack}', model['prepare'][0])
         self.assertEqual(init.config_path('model', 'inkling'), Path('/config/model-inkling.json'))
+
+    def test_rename(self):
+        cfg = {'files': ['dir/a.gguf_file', 'b.gguf'], 'rename': {'dir/a.gguf_file': 'a.gguf'}}
+        init.model_files(cfg)
+        self.assertEqual(init.local_name(cfg, 'dir/a.gguf_file'), 'a.gguf')
+        self.assertEqual(init.local_name(cfg, 'b.gguf'), 'b.gguf')
+        for bad in ({'x.gguf': 'a.gguf'}, {'dir/a.gguf_file': 'sub/a.gguf'}, {'dir/a.gguf_file': 'b.gguf'}):
+            with self.assertRaises(ValueError):
+                init.model_files({**cfg, 'rename': bad})
 
 
 if __name__ == '__main__':

@@ -1,5 +1,5 @@
-"""The checkout's tests' copy of the fork's serve/engine_fields.py: the run configs' "engine" fields as "args" and "env".
-The server reads /config itself, fields included; nothing in the image uses this file.
+"""The config files' "engine" and "engine_env" fields as "args" and "env": run_configs.py writes them out so that
+PolyStrata's server, which reads only "args" and "env", starts the engine with them.
 
 A config names engine options as fields instead of an argv list: "engine" maps each option to its value
 ("conversation_cache_mib": 16384 is --conversation-cache-mib 16384; true is a bare flag, false or null leaves it out),

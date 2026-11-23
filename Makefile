@@ -1,15 +1,15 @@
 .DEFAULT_GOAL := up
 COMPOSE ?= podman compose
-# The served model: qwen (config/server.json: the variants it lists, each
-# config/{model,server}-<variant>.json) or another config/{model,server}-<name>.json pair served alone. STRATA_VARIANT
-# picks the variant to start with (default: the first listed, q1).
+# The served model: qwen (config/server.json: the models it lists, each config/{model,server}-<name>.json, the server
+# switching between them on request: Qwen3.8-Flash-Next q1 and q3, Inkling 2 Mini) or another
+# config/{model,server}-<name>.json pair served alone. STRATA_VARIANT picks the one to start with (default: q1).
 STRATA_MODEL ?= qwen
 export STRATA_MODEL
 STRATA_VARIANT ?=
 export STRATA_VARIANT
-# The Strata checkout the image is built from (our fork, as its working tree is: uncommitted changes included), and
-# this directory, the image's second build context (the scripts it installs). Both absolute: compose.yaml reads them.
-STRATA_SRC ?= ../Strata
+# The PolyStrata checkout the image is built from (our fork, its inkling-amd branch, as its working tree is:
+# uncommitted changes included), and this directory, the image's second build context (the scripts it installs). Both absolute: compose.yaml reads them.
+STRATA_SRC ?= ../PolyStrata
 override STRATA_SRC := $(abspath $(STRATA_SRC))
 STRATA_LOCAL_DIR := $(CURDIR)
 export STRATA_SRC STRATA_LOCAL_DIR
@@ -42,7 +42,7 @@ pull-config:
 	./scripts/config-volume.sh pull
 build:
 	@test -d '$(STRATA_SRC)/engine' -a -d '$(STRATA_SRC)/terminal' || { \
-		echo 'STRATA_SRC=$(STRATA_SRC) is not a Strata checkout of the engine/ and terminal/ layout (v0.2.19 or later).' >&2; exit 1; }
+		echo 'STRATA_SRC=$(STRATA_SRC) is not a PolyStrata checkout (engine/ and terminal/, 0.2.19 or later).' >&2; exit 1; }
 	$(COMPOSE) build model-init
 init: secrets config build
 	$(COMPOSE) run --rm --no-deps -T model-init

@@ -1,6 +1,6 @@
 # Local Strata server
 
-Run Strata's OpenAI- and Anthropic-compatible API in rootless Podman with an
+Run PolyStrata's OpenAI- and Anthropic-compatible API (PolyStrata is built on Strata) in rootless Podman with an
 AMD HIP image. This follows `../llamacpp-local`: `make up` builds the image,
 waits for a one-shot model initializer, then recreates the authenticated server.
 The endpoint is `http://127.0.0.1:9931/v1` by default; set
@@ -8,7 +8,8 @@ The endpoint is `http://127.0.0.1:9931/v1` by default; set
 
 The default is **Qwen3.8-Flash-Next Unsloth UD-IQ1_M** (Dynamic V3.1, about 1 bit), with CPU image encoding,
 200000 context, INT8 KV and DFlash2 drafting (no MTP layer loaded). It keeps every expert of the model.
-See [supported models](https://github.com/Niko1221/Strata/blob/main/docs/MODELS.md).
+The same server also serves Qwen3.8-Flash-Next UD-IQ3_XXS and **Inkling 2 Mini** (Unsloth UD-Q4_K_XL), loading the
+one a request names ([Switching models](#switching-models)).
 
 ## Requirements
 
@@ -21,18 +22,18 @@ See [supported models](https://github.com/Niko1221/Strata/blob/main/docs/MODELS.
   and writable by everyone, the default on current Fedora (`ls -l` shows
   `crw-rw-rw-`). Supplementary groups such as `render` do not reach rootless
   containers, so group-only access is not enough.
-- About 48 GB RAM, 16 GB VRAM and **at least 200 GB free SSD space**, plus
-  space for the ROCm build image. The two GGUFs total about 66.4 GB; packing
-  duplicates the expert weights; MTP needs downloaded and prepared copies; each
-  variant's load image takes about 30 GB more.
+- 32 GB RAM or more, 16 GB VRAM and **at least 200 GB free SSD space**, plus
+  space for the ROCm build image. The Qwen GGUFs total about 152 GB (UD-IQ1_M
+  68.0 GB, UD-IQ3_XXS 83.6 GB) and Inkling 2 Mini's 17.6 GB; MTP needs downloaded
+  and prepared copies.
 - Outbound GitHub/Hugging Face/package registry access. No Strata or ROCm host installation is required.
 - A host hard memlock limit that permits unlimited locking. Rootless Podman
   cannot raise a host hard limit; check `ulimit -Hl` if container creation fails.
 
 ## Start
 
-The image is built from a checkout of our Strata fork, `../Strata` by default
-(`STRATA_SRC`, below); it needs the 0.2.19 layout (`engine/`, `terminal/`).
+The image is built from a checkout of our PolyStrata fork, `../PolyStrata` by default
+(`STRATA_SRC`, below), on its `inkling-amd` branch (Inkling 2 Mini on an AMD card).
 
 ```sh
 make set-api-key
@@ -88,75 +89,75 @@ curl --fail http://127.0.0.1:9931/health
 make down
 ```
 
-Use your stored API key as a Bearer token and request model
-`qwen3.8-flash-next-unsloth-ud-iq1_m`. The server also exposes `/v1/models`.
+Use your stored API key as a Bearer token and request model `q1`
+(`qwen3.8-flash-next-unsloth-ud-iq1_m`), `q3` or `inkling`. `/v1/models` lists all three.
 `make down` preserves the model volume and credentials.
 
 ### Switching models
 
-One server switches between the Qwen variants as requests ask for them (the
-fork's `"models"`, documented in Strata's `docs/BATCHING.md`):
+One server holds three models and loads the one a request names (PolyStrata's
+`"switch_on_request"`, its `docs/BACKENDS.md`, "Changing the model"):
+
+| request `model` | model | engine | files |
+|---|---|---|---|
+| `q1`, `qwen3.8-flash-next-unsloth-ud-iq1_m` | Qwen3.8-Flash-Next, Unsloth UD-IQ1_M (Dynamic V3.1) | `strata` | `config/{model,server}-q1.json` |
+| `q3`, `qwen3.8-flash-next-ud-iq3_xxs` | Qwen3.8-Flash-Next, Unsloth UD-IQ3_XXS (Dynamic V3.1) | `strata` | `config/{model,server}-q3.json` |
+| `inkling`, `inkling-2-mini-ud-q4_k_xl` | Inkling 2 Mini, Unsloth UD-Q4_K_XL | `strata-poly` | `config/{model,server}-inkling.json` |
 
 ```sh
-make up                              # starts with Qwen UD-IQ1_M; every variant below is served
+make up                              # starts with q1; a request for q3 or inkling switches
+make up STRATA_VARIANT=inkling       # starts with Inkling 2 Mini instead
 ```
 
-Request a variant's name to switch to it; `POST /v1/load {"model": "q3"}` switches
-by hand. A request that names no model goes to the model loaded when it arrives.
-Only one model runs at a time: each takes the whole GPU and most of the RAM.
-Upstream Strata 0.2.19 removed the DeepSeek-V4.1-Flash engine, so this image no
-longer carries it.
+A request that names another of the three waits for the running request, stops
+the loaded engine and starts the other (only one model is in memory at a time),
+then is answered by it with that model's tokenizer, chat template and sampling.
+`POST /v1/load {"model": "q3"}` switches by hand; a request that names no model,
+or a name none of them has, is answered by the loaded one. `make init` downloads
+and prepares all three. `STRATA_MODEL=<name>` still serves
+`config/server-<name>.json` alone.
 
-`STRATA_MODEL=<name>` still serves `config/server-<name>.json` alone, with
-`config/model-<name>.json` linked as `/data/model-<name>` and `/data/pack-<name>`.
+At each start `scripts/serve.py` writes one PolyStrata run config per model,
+`/tmp/strata-run/strata-<name>.json`, from `config/` (`scripts/run_configs.py`):
+`config/server.json` holds what the Qwen models share and lists the models
+(`"models"`), each model's file adds its own keys over it, and a file that names
+its own `"exe"` (Inkling) is another engine and takes only the server's keys. The
+`engine` and `engine_env` fields are written out as `args` and `env` (below).
+PolyStrata's server lists the run configs beside the one it starts with and
+switches between them.
 
-#### Inkling-2-Mini
+Measured on pc26 (RX 7800 XT 16 GB, Ryzen 7 7800X3D, 32 GB RAM) on 2026-11-23
+through the API, one request at a time, the model's own sampling and thinking:
 
-Thinking Machines' Inkling-2-Mini runs on its own engine, `strata-inkling`, which the
-image builds next to `strata`. It is served alone, not as a variant of the Qwen
-server: the server reads an engine's family once, when it starts.
-
-```sh
-make init STRATA_MODEL=inkling       # about 15 GB: the SQ-15 build, its picture reader and tokenizer
-make up STRATA_MODEL=inkling
-```
-
-Request model `inkling-2-mini-sq-15` (or `inkling`). Every file comes from
-`strata-engine/Inkling-2-Mini-Strata`, pinned to a commit in `config/model-inkling.json`:
-
-- `Inkling-2-Mini-SQ-15.strata` (14.3 GB), upstream's own build ("flagship quality, beats
-  UD-Q4_K_XL; 100% GPU on 16 GiB cards"). The HIP backend reads only `.strata` files: given
-  Unsloth's GGUF it reads an empty weight section and crashes at start (only the CPU backend
-  reads GGUF). SQ-20 (19.3 GB, the only build with the DSpark drafter embedded) does not fit
-  16 GB of VRAM; SQ-10 (10.5 GB) is the smaller choice.
-- `tokenizer.json` and `chat_template.jinja`, which `make init` turns into the server's
-  tokenizer folder (`tools/inkling_tokenizer.py`). The chat template is not an LFS file, so it
-  is checked against its git blob id.
-- The picture reader, `Inkling-2-Mini-Vision.strata` (0.6 GB).
-
-The context is 32K (`max_context`), upstream's default. Inkling-2-Mini has no thinking
-mode. Before the engine starts, the server asks it (`strata-inkling --info`) whether it
-reads pictures and has a drafter; it adds `--draft dspark` only when it has one, and starts
-without the picture reader (saying so in the log) when it does not read pictures. Measured
-on pc26 on 2026-11-23: about 65 tokens/s answering and 60 tokens/s reading short prompts;
-it reads pictures.
-
-#### Qwen variants
-
-The server holds several Qwen variants of the same model and switches between them
-while it runs (the fork's `"models"`, documented in Strata's
-`docs/BATCHING.md`). `config/server.json` is the common config; each variant
-adds its own pack and shards:
-
-| request `model` | variant | files |
+| | writes | reads a 7-8K-token prompt |
 |---|---|---|
-| `qwen3.8-flash-next-unsloth-ud-iq1_m`, `q1` | Unsloth UD-IQ1_M (Dynamic V3.1) | `config/{model,server}-q1.json` |
-| `qwen3.8-flash-next-ud-iq3_xxs`, `q3` | Unsloth UD-IQ3_XXS (Dynamic V3.1) | `config/{model,server}-q3.json` |
+| q1 (UD-IQ1_M) | 32-38 tokens/s | about 1,100 tokens/s |
+| q3 (UD-IQ3_XXS) | 16-17 tokens/s | about 940 tokens/s |
+| inkling (UD-Q4_K_XL) | 57-61 tokens/s | about 410 tokens/s |
 
-Both engines run with `STRATA_ROUTE_LIVE=1`
-(`engine_env.route_live`), which puts the fork's routing kernels in every verify
-graph; with `route_prior` 0 (no `"strata_tune"`) they write nothing, so the
-answers are the bits of an engine without them.
+#### Inkling 2 Mini
+
+Thinking Machines' Inkling 2 Mini runs on PolyStrata's own engine, `strata-poly`,
+which the image builds next to `strata`. Its HIP build needs our fork's
+`inkling-amd` branch (two fixes for ROCm 7.0; without them it does not compile, and
+then faults on the GPU at the first token). The model is Unsloth's UD-Q4_K_XL
+GGUF (17.6 GB), from the `Mainline_Support` folder of `unsloth/Inkling-2-Mini-GGUF`
+(the layout llama.cpp and strata-poly read; the top-level files are another
+layout), pinned to the commit PolyStrata's setup uses. Unsloth names the file
+`.gguf_file`; `"rename"` in `config/model-inkling.json` saves it as `.gguf`.
+`make init` builds its tokenizer folder from the GGUF (PolyStrata's
+`tools/strata_tokenizer.py`).
+
+UD-Q4_K_XL does not fit whole in 16 GB of VRAM: the card holds most of its
+experts and strata-poly reads the rest from RAM. The run config is the one
+PolyStrata's setup writes for an AMD card: a 32K context, `--kv-whole` (the
+attention caches take their VRAM at load) and one request at a time. Pictures
+are off: PolyStrata's picture tower is a CUDA program. Inkling 2 Mini thinks
+before it answers unless the request sets `reasoning_effort` to `none`, so give
+it room in `max_tokens`. The engine writes the experts it used to
+`/data/pack-inkling/expert-profile.txt` and caches those first on the next start.
+
+#### Qwen models
 
 UD-IQ3_XXS is Unsloth's Dynamic V3.1 file (2026-11-04, 83.6 GB in four shards):
 its experts mix IQ2_S, IQ3_XXS and IQ4_XS gate/up projections with IQ4_NL and
@@ -170,65 +171,19 @@ ISTA-DASLab's `mmproj-Qwen3.8-Flash-Next-BF16.gguf` (a `sources` entry in
 `config/model-q1.json`). Unsloth's UD-IQ1_S cannot be used: it mixes two expert
 formats in one layer, which Strata refuses.
 
-The Qwen variants draft with DFlash2 alone (`"draft": "dflash2"`, `"draft_fallback": "none"`,
-`"spec": 6`, `"draft_conf": 0.7` in `config/server.json`'s `engine`): the MTP layer is not
-loaded, which leaves about 1 GB more VRAM for the expert cache. `--mtp` stays in the arguments;
-the engine reads only the draft vocabulary from it. Parked conversations stay on disk: the
-fork's engine (branch `dflash2-disk-park`) writes park files without the MTP layer's K/V when
-that layer is not loaded. An engine without that change parks them in RAM instead, and they are
-lost at every switch and restart. `"drafting": "args"` is a fork setting: the server passes
-those options as written instead of Strata's own choice. A DFlash2 that cannot start ends the
-start with an error (there is no MTP to fall back to); q1's start is then retried with the MTP
-alone. `make init` fetches the drafter once, into `/data/dflash2` (`"dflash2": true` in
-`config/model-q1.json`: about 1.2 GB downloaded, 0.52 GB kept). DFlash2 is not measured on gfx1101. To keep the MTP layer as the fallback, set
-`"draft_fallback": "mtp"`; to go back to the MTP alone, set `"drafting": "mtp"`, remove the five
-`draft*` options and set `"spec"` back to 4.
-UD-IQ1_M is not measured on pc26 yet;
-the Q2_0 numbers below are kept for comparison.
+The Qwen models draft with DFlash2 alone (`"drafting": "dflash2"`, and in
+`config/server.json`'s `engine` `"draft": "dflash2"`, `"draft_fallback": "none"`,
+`"spec": 6`, `"draft_conf": 0.7`): the MTP layer is not loaded, which leaves about
+1 GB more VRAM for the expert cache. `--mtp` stays in the arguments; the engine
+reads only the draft vocabulary from it. PolyStrata's server chooses the drafter
+from `"drafting"` and keeps the pinned drafter file named in `"user_args"`; its
+start log says what it chose (`drafting: DFlash2 alone`). `make init` fetches the
+drafter once, into `/data/dflash2` (`"dflash2": true` in `config/model-q1.json`).
 
-Another model name is served by whichever variant is loaded. A switch takes
-about as long as an engine start, about 8 s with load images (below); the scheduler keeps a variant loaded while
-its requests are queued and switches once a request for another has waited
-`model_max_wait_s` (120 s). There is no default variant: the server starts with
-`q1` (the first listed, or `STRATA_VARIANT`) and stays on whichever is loaded
-(`"default_model"` with `"default_idle_s"` would switch back to one when idle).
-Each variant parks its conversations in its own folder, `/data/convcache/<variant>`
-(the server derives them from the common `/data/convcache`), and they survive a
-switch: the outgoing engine parks the conversation it holds as it stops, and the
-variant's next request goes on from that file. No session file is written
-(`"model_session_dir": false`). `make up STRATA_VARIANT=q3`
-starts with UD-IQ3_XXS, and `POST /v1/load {"model": "q3"}` switches by hand.
-`make init` downloads and packs every variant (UD-IQ3_XXS: 83.6 GB more).
-
-Each variant keeps a load image in `/data/load-image/<variant>` (the fork's
-`STRATA_LOAD_IMAGE`): its GPU expert cache and RAM experts as two files in the
-order the engine loads them, so a start reads them sequentially instead of
-expert by expert. On pc26 an IQ3_XXS start went from 21.7 s to 8.4 s. The first
-start of a variant writes them (about 9 s more), as does any start after a
-change to its expert profile, `--expert-cache` or `--resident-budget-gib`; they
-take about 30 GB per variant.
-
-The variants place their experts differently, because IQ3_XXS's experts do not
-fit in pc26's RAM beside the GPU's share (33 GB outside VRAM, against Q2_0's
-25 GB):
-
-| | Q2_0 | IQ3_XXS |
-|---|---|---|
-| GPU expert cache | 5760 experts (7.4 GiB) | 4300 (7.0 GiB) |
-| experts in RAM | 22 GiB budget (`--resident-budget-gib`) | 24 GiB budget |
-| the rest | read from the SSD unbuffered (`STRATA_UNBUFFERED_LOAD=1`) | the same |
-| prompt chunk | `auto` (8192) | `auto` (8192) |
-| prompt reading, 29-34K tokens | 987 tokens/s | 919 tokens/s |
-| answer speed | 43 tokens/s | 18-20 tokens/s |
-
-Measured on pc26 on 2026-10-25, with ISTA-DASLab's IQ3_XXS (the `q3` variant until
-UD-IQ3_XXS replaced it on 2026-11-05; UD-IQ3_XXS is not measured yet). IQ3_XXS with Q2_0's earlier settings (its whole
-remainder page-locked, the rest read through the page cache, 2048-token chunks)
-re-read the experts several times over per prompt chunk and read prompts at
-about 30 tokens/s. Q2_0 with every expert in RAM read 832 tokens/s with
-2048-token chunks and 1057 with 8192, but then left no RAM free for the picture
-reader and session saves; the 22 GiB budget keeps about 5 GB free. Larger
-budgets answer faster on IQ3_XXS (26 GiB: 25 tokens/s) but leave no RAM free.
+Each model keeps part of its experts on the card and the rest in RAM, within
+`--resident-budget-gib 22`; whatever does not fit is read from the SSD unbuffered
+(`STRATA_UNBUFFERED_LOAD=1`). IQ3_XXS's experts are larger, so more of them come
+from the SSD and it writes about half as fast as UD-IQ1_M.
 
 ### As a systemd service (Quadlet)
 
@@ -332,34 +287,27 @@ key is an option without its dashes, `-` written as `_`
 (`"conversation_cache_mib": 16384` is `--conversation-cache-mib 16384`); `true`
 is a bare flag (`"resident_experts": true`), and `false` or `null` leaves the
 option out. `engine_env` does the same for the engine's `STRATA_` environment
-variables (`"load_image": "/data/load-image/q1"` is `STRATA_LOAD_IMAGE`; `true`
-is `1`). Our fork's server expands both as it reads the config, in the common
-file and in each variant's, into the `args` and `env` the engine starts with. A
-variant's option replaces the common one of the same name. Raw `args` and `env`
+variables (`"unbuffered_load": true` is `STRATA_UNBUFFERED_LOAD=1`; `true`
+is `1`). `scripts/run_configs.py` expands both, in the common file and in each
+model's, into the `args` and `env` of the run configs PolyStrata's server starts
+the engine with. A model's option replaces the common one of the same name. Raw `args` and `env`
 still work beside them, but naming an option in both is an error. Keep top-level
 `max_context` and `engine.max_context` consistent. Contexts above 262144 require
 explicit rope scaling configured in Strata.
 
-`engine_env.hip_fast_dec` is `0`: Strata 0.2.19 turns `STRATA_HIP_FAST_DEC` on by
-default on gfx11 (its `rdna_mmvq` and `rdna_gr` decode kernels), and with it both
-Unsloth UD-IQ1_M and UD-IQ3_XXS answered garbage from the first token on pc26
-(2026-11-23). The other gfx11 defaults it lists at start stay on.
+`engine_env.gfx11_wmma_defaults` is `0`: Strata 0.2.19 turns seven matrix-core
+switches on by default on gfx11 (`PF_GEMM PF_F16 PF_DM16 PF_P1A PF_P1A_L2
+DFLASH_WMMA HIP_FAST_DEC`). With them on pc26 (2026-11-23), both Unsloth UD-IQ1_M
+and UD-IQ3_XXS read every prompt longer than about 70 tokens as garbage (asked to
+repeat a message, the model called it corrupted), and with `HIP_FAST_DEC` alone
+they wrote garbage from the first token. The other gfx11 defaults it lists at start
+stay on.
 
-Sampling is per model: each variant's file has its own `sampling` (the defaults
+Sampling is per model: each Qwen model's file has its own `sampling` (the defaults
 for the fields a request leaves out; a request's own values win), and the common
-`config/server.json` has none. A key the common file did set would be the default
-for every variant that leaves it out. Both Qwen variants start with the
-model card's thinking set (temperature 1.0, top_p 0.95, top_k 20).
-
-The scheduler settings are listed in `config/server.json` with Strata's default
-values, so they can be tuned in place (see upstream `terminal/serve/turns.py` and
-`docs/BATCHING.md`): `turn_slice_s` (300: the engine time a conversation keeps
-the turn while others wait), `turn_max_wait_s` (the longest a request waits),
-`turn_hold_s` (how long the turn waits for a tool call's follow-up),
-`turn_hold_skip_timeout_s`, `turn_side_wait_s`, the `priority_*` keys (a
-request's priority band, preemption, reservations and aging), and the variant
-switching keys `default_model`, `default_idle_s`, `model_max_wait_s`,
-`model_min_resident_s`, `model_preempt` and `unknown_model`.
+`config/server.json` has none. Both Qwen models start with the model card's
+thinking set (temperature 1.0, top_p 0.95, top_k 20); Inkling 2 Mini with
+PolyStrata's defaults for it.
 
 `parallel` is a native top-level setting, currently `1` (one request at a time).
 Larger values add batch slots that use VRAM otherwise available to the expert
@@ -368,45 +316,14 @@ count to fit available memory; `/v1/status` reports the effective count in
 `concurrency.serving`. See the
 [upstream batching guide](https://github.com/Niko1221/Strata/blob/main/docs/BATCHING.md).
 
-Conversation parking is on disk, through our fork's `--conversation-cache-dir`
-(see the Strata pin below): `engine.conversation_cache_dir` (`/data/convcache`)
-writes each conversation the engine switches away from to the `strata-data`
-volume, and restores it when a request continues it, avoiding repeated prompt
-processing (about 1 s instead of about 47 s for a 22K-token prompt). The K/V is
-streamed between the file and the GPU, so a restore holds only the running state
-and checkpoints in RAM; `--conversation-cache-min-free-mib 512` lowers the
-free-RAM floor from its 2560 MiB default (the locked experts leave only 2-3 GB free,
-so the default refused parking past about 70K tokens), and a
-conversation that cannot be parked or read back falls back to ordinary prompt
-processing. A conversation read back keeps its file, and parking it again updates
-that file in place: only the new K/V, the new checkpoints and the running state are
-written (about 240 MB instead of the whole 0.9-1.1 GB file for an 18K-token
-conversation on pc26). A sibling conversation that shares a parked one's system
-prompt and tools borrows that prefix straight from its file. Files are 0.75-1.1 GB
-at 18K tokens (each checkpoint adds about 118 MB) and about 3.4 GB at 166K tokens.
-`--conversation-cache-mib 16384` caps what the files of all three variants hold
-together, removing the oldest file first whichever variant's, and
-`--conversation-cache-slots 0` removes the slot limit.
-`--conversation-cache-min-tokens 8192` keeps short side requests (a client's title
-or summary call) from being parked, so they cannot push a long conversation out,
-and `--conversation-cache-skip-tail 8192` does not park a conversation whose client
-only rewrote its last reply (re-rendered without its reasoning).
-`--conversation-cache-live-tail 4096` parks a conversation as of its newest
-checkpoint when it is at most 4096 tokens past it, so the running state is
-written once. `--prompt-cache 2` keeps two checkpoints per conversation (the end
-of the system prompt and the start of the last assistant turn) instead of 6:
-nearly every resume on pc26 starts at one of them, and each checkpoint left out
-saves about 118 MB of RAM and of every park's writes.
-
-Parked conversations are kept across restarts (`make down`/`make up`, a crash, a
-variant switch). Each folder's `identity` file names the model and the engine
-settings that wrote its files; at start the engine indexes the files of the same
-identity back into the cache without reading their K/V, and removes the rest. A
-change of model, engine version or a setting that changes what the files mean
-(`--kv`, `--max-context`, ...) therefore starts the cache empty. At stop the engine
-parks the conversation it holds, which `stop_grace_period: 60s` in `compose.yaml`
-leaves time for. A file torn by a crash fails its hashes when it is read back and is
-removed then. `/metrics` exposes usage, restores and evictions under `conversation_cache`.
+Conversations are parked in RAM, as upstream Strata does: the engine keeps up to
+four conversations it switched away from and restores one when a request continues
+it. Its budget is sized from the free RAM; on pc26 the experts leave too little,
+and the engine turns parking off at start (`conversation cache off: not enough free
+RAM`). A conversation that continues from where the engine stands needs no parking.
+`--prompt-cache 2` keeps two checkpoints per conversation (the end of the system
+prompt and the start of the last assistant turn) instead of 6. A switch to another
+model starts it with no conversation.
 
 Manual session files (`POST /slots/0?action=save|restore`) are off: set
 `slot_save_path` (for example to `/data/sessions`) to turn them on. They are
@@ -433,8 +350,9 @@ Files require Hugging Face LFS size and SHA-256 metadata. They are stored by
 basename under `/data/model`, so selected filenames must have unique basenames.
 The manifest preserves the resolved repository metadata.
 
-Optional `prepare` is an ordered list of argument arrays invoking Python scripts
-from `/opt/strata/tools`; no shell is used. Optional `copies` is a list of
+Optional `rename` maps a repository file to the name it is saved as (Inkling's
+`.gguf_file` as `.gguf`). Optional `prepare` is an ordered list of argument arrays
+invoking Python scripts from `/opt/strata/terminal/tools`; no shell is used. Optional `copies` is a list of
 `{"source": "...", "target": "..."}` objects. Arguments and copy paths support
 `{model}`, `{pack}`, `{root}`, and `{first_file}` placeholders. Preparation is
 cached per resolved model and complete configuration, and a failed command
@@ -472,18 +390,21 @@ Compose accepts these environment overrides (or an ignored `.env` file):
 | `HIP_ARCHITECTURES` | `gfx1101` | Image build target |
 | `BUILD_JOBS` | `8` | Parallel compile jobs; lower it to limit compiler memory use |
 | `STRATA_VERIFY_EXISTING` | `0` | Set to `1` to checksum existing GGUFs during initialization |
-| `STRATA_SRC` | `../Strata` | The Strata checkout the image is built from |
+| `STRATA_SRC` | `../PolyStrata` | The PolyStrata checkout the image is built from |
 
-This repository is the deployment of our fork,
-[UltimateBoomer/Strata](https://github.com/UltimateBoomer/Strata) (upstream
-[Niko1221/Strata](https://github.com/Niko1221/Strata) plus the features described
-above). It lived in the fork at `deploy/local/` for a while and is separate again:
-the fork holds the source, this repository the image recipe, configs and scripts.
-The image builds the checkout at `STRATA_SRC` (default `../Strata`) as its working tree is, uncommitted
+This repository is the deployment of our PolyStrata fork,
+[UltimateBoomer/PolyStrata](https://github.com/UltimateBoomer/PolyStrata) (upstream
+[simplexai-labs/PolyStrata](https://github.com/simplexai-labs/PolyStrata), which is
+[Niko1221/Strata](https://github.com/Niko1221/Strata) plus its own engine and server).
+The fork holds the source, this repository the image recipe, configs and scripts.
+Until 2026-11-23 it built our Strata fork (UltimateBoomer/Strata), whose server had
+the turn scheduler, priorities, disk-parked conversations and the console; those are
+not in PolyStrata. The image builds the checkout at `STRATA_SRC` (default `../PolyStrata`) as its working tree is, uncommitted
 changes included, so a change is tested with `make up` before it is committed or
-pushed. The `Containerfile` copies the engine's sources (`engine/`, and the
-picture reader's `terminal/tools/vision/`) before compiling them and the rest of
-the tree after, so a change to the server (`terminal/`) or the console rebuilds in
+pushed. The `Containerfile` copies the engines' sources (`engine/`, and the
+picture reader's `terminal/tools/vision/`) and compiles `strata` and `strata-poly` in
+trees of their own and the rest of
+the tree after, so a change to the server or the web page (`terminal/`) rebuilds in
 seconds and only an engine change recompiles. The image is labelled with the
 commit (`org.opencontainers.image.revision`, `-dirty` for uncommitted changes) and
 the last commit to the engine's sources (`org.strata.engine-sources`). The
@@ -502,23 +423,9 @@ persisted at `/data/strata.log`; inspect it with
 
 ### Web page
 
-The fork replaces Strata's chat page at `http://<host>:9931/` with a console (the
-API key goes under About):
-
-- **Monitor**: the engine's state, speed and hardware, the recent requests, the turn
-  scheduler (the request holding the engine and its session, priority and time; the
-  queue in order with each request's session, variant, priority and wait; holds,
-  reservations and preemptions), the model variants (which one is loaded, what waits
-  for each, a Load button to switch), and the conversation cache: one bar of the disk
-  budget split into a part per parked conversation, every variant's, with a table of
-  the files (session, variant, size, age; files a client dropped are marked
-  obsolete). Session names come from the requests (`strata_session`,
-  `X-Strata-Session`, `metadata.user_id`) and are kept in `/data/session-names.json`;
-  a file parked before its name was seen shows the session's tag.
-- **About**: the model, the engine, the hardware and the API addresses.
-
-The chat page is not served, and the run config is not edited from the page: change
-`config/` and run `make up`.
+PolyStrata's chat page is served at `http://<host>:9931/`, with a model list that
+switches between the three models. The run config is not edited from the page:
+change `config/` and run `make up`.
 
 ## Validation
 
@@ -530,14 +437,14 @@ make calibrate
 ```
 
 This stops the Strata server and runs upstream `terminal/tools/calibrate.py` against the
-served model's run config (for the Qwen variants, `config/server.json` with the
-variant's own file over it: `STRATA_VARIANT`, default `q1`) in a temporary
+run config of one model (`STRATA_VARIANT`, default `q1`), made as
+`scripts/serve.py` makes it, in a temporary
 container with the same GPU and model mounts.
 Stop other GPU inference servers first. Calibration measures PCIe share, draft
 confidence, CPU worker count, and adaptive expert-cache settings; it can take
 15–30 minutes or longer. It prints recommended settings and measurements without
 editing the configuration. Apply the desired settings to `config/server.json`
-(or the variant's file when they differ by variant), then restart serving with
+(or the model's file when they differ by model), then restart serving with
 `make up`.
 The server stays stopped if calibration finishes or fails.
 

@@ -1,21 +1,19 @@
 {
-  "repository": "strata-engine/Inkling-2-Mini-Strata",
-  "revision": "04996a1e2c45009b6a04f2af126cb6bdb2ba3587",
+  "repository": "unsloth/Inkling-2-Mini-GGUF",
+  "revision": "ea0c79b2ecd73669e774c8519b79bfabfddbc027",
   "files": [
-    "Inkling-2-Mini-SQ-15.strata",
-    "Inkling-2-Mini-Vision.strata",
-    "tokenizer.json",
-    "chat_template.jinja"
+    "Mainline_Support/Inkling-2-Mini-UD-Q4_K_XL.gguf_file"
   ],
+  "rename": {
+    "Mainline_Support/Inkling-2-Mini-UD-Q4_K_XL.gguf_file": "Inkling-2-Mini-UD-Q4_K_XL.gguf"
+  },
   "prepare": [
     [
-      "inkling_tokenizer.py",
-      "--hf-json",
-      "{model}/tokenizer.json",
-      "--template",
-      "{model}/chat_template.jinja",
+      "strata_tokenizer.py",
+      "--gguf",
+      "{first_file}",
       "--out",
-      "{pack}/tokenizer"
+      "{pack}"
     ]
   ]
 }

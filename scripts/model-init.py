@@ -68,6 +68,12 @@ def tool(name, *args):
                    cwd=ROOT, check=True)
 
 
+def local_name(cfg, filename):
+    """The name a repository file is saved as in the model folder: its "rename" entry (Unsloth publishes Inkling 2
+    Mini's Mainline_Support files as .gguf_file), else its basename."""
+    return (cfg.get('rename') or {}).get(filename) or Path(filename).name
+
+
 def model_files(cfg):
     if not isinstance(cfg.get('files'), list) or not cfg['files'] or not all(isinstance(f, str) for f in cfg['files']):
         raise ValueError('files must be a nonempty list of repository filenames')
@@ -81,14 +87,22 @@ def model_files(cfg):
         files.extend(source['files'])
     if not files:
         raise ValueError('At least one model file is required')
+    rename = cfg.get('rename') or {}
+    if not isinstance(rename, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in rename.items()):
+        raise ValueError('rename must map repository filenames to local names')
+    if set(rename) - set(files):
+        raise ValueError('rename names a file the config does not download')
+    if any(Path(v).name != v or v in ('', '.', '..') for v in rename.values()):
+        raise ValueError('A rename must be a plain file name')
     names = set()
     for filename in files:
         path = Path(filename)
         if path.is_absolute() or '..' in path.parts or not path.name:
             raise ValueError('Invalid model filename')
-        if path.name in names or path.name == 'manifest.json' or path.name.endswith('.partial'):
+        name = local_name(cfg, filename)
+        if name in names or name == 'manifest.json' or name.endswith('.partial'):
             raise ValueError('Model filenames must have unique, non-reserved basenames')
-        names.add(path.name)
+        names.add(name)
     return files
 
 
@@ -99,7 +113,7 @@ def prepare(cfg, folder, pack):
     if complete.exists():
         return
     values = {'model': str(folder), 'pack': str(pack), 'root': str(ROOT),
-              'first_file': str(folder / Path(cfg['files'][0]).name)}
+              'first_file': str(folder / local_name(cfg, cfg['files'][0]))}
     for command in cfg.get('prepare', []):
         if not isinstance(command, list) or not command or not all(isinstance(arg, str) for arg in command):
             raise ValueError('Each prepare command must be a nonempty list of strings')
@@ -161,7 +175,7 @@ def resolve(session, repository, revision):
     return metadata
 
 
-def fetch(session, repository, metadata, files, folder):
+def fetch(session, repository, metadata, files, folder, rename=None):
     base = f"https://huggingface.co/{quote(repository, safe='/')}"
     entries = {item['rfilename']: item for item in metadata['siblings']}
     for filename in files:
@@ -170,7 +184,7 @@ def fetch(session, repository, metadata, files, folder):
         entry = entries[filename]
         info = entry.get('lfs')
         url = f"{base}/resolve/{metadata['sha']}/{quote(filename, safe='/')}"
-        target = folder / Path(filename).name
+        target = folder / ((rename or {}).get(filename) or Path(filename).name)
         if not info:
             # a file outside LFS (a chat template): pinned by its git blob id and size at the resolved revision
             blob, size = entry.get('blobId'), entry.get('size')
@@ -200,9 +214,10 @@ def initialize(cfg, session, suffix=''):
         {**cfg, 'revision': resolved}, sort_keys=True).encode()).hexdigest()[:16]
     folder = DATA / 'models' / identity
     pack = DATA / 'packs' / preparation_identity
-    fetch(session, cfg['repository'], metadata, cfg['files'] + ([cfg['vision_file']] if cfg.get('vision_file') else []), folder)
+    fetch(session, cfg['repository'], metadata, cfg['files'] + ([cfg['vision_file']] if cfg.get('vision_file') else []), folder,
+          cfg.get('rename'))
     for source, source_metadata in sources:
-        fetch(session, source['repository'], source_metadata, source['files'], folder)
+        fetch(session, source['repository'], source_metadata, source['files'], folder, cfg.get('rename'))
     (folder / 'manifest.json').write_text(json.dumps(metadata, indent=2) + '\n')
     prepare(cfg, folder, pack)
     if cfg.get('dflash2'):
