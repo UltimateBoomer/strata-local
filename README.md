@@ -140,12 +140,20 @@ through the API, one request at a time, the model's own sampling and thinking:
 | q3 (UD-IQ3_XXS) | 16-17 tokens/s | about 940 tokens/s |
 | inkling (UD-Q4_K_XL, 200K context) | 47-49 tokens/s | about 490-530 tokens/s; 775 with its hipBLASLt table (9K, one request) |
 
+With PolyStrata 0.2.20-poly.4-hotfix merged (the fork's `9d7d9e2b`, same day, one
+request each, longer prompts): inkling wrote 42-50 tokens/s and read a 36,813-token
+prompt at 997 tokens/s; q1 wrote 33-36 and read 29,831 tokens at 1,563; q3 wrote 7-21
+(7 in the first request after the switch) and read 29,831 at 1,007. Each answered
+17 × 23, repeated an SQL line exactly and found a code in the long prompt.
+
 #### Inkling 2 Mini
 
 Thinking Machines' Inkling 2 Mini runs on PolyStrata's own engine, `strata-poly`,
-which the image builds next to `strata`. Its HIP build needs our fork's
-`inkling-amd` branch (two fixes for ROCm 7.0; without them it does not compile, and
-then faults on the GPU at the first token). The model is Unsloth's UD-Q4_K_XL
+which the image builds next to `strata`. Its HIP build is our fork's `inkling-amd`
+branch: upstream PolyStrata 0.2.20-poly.4-hotfix, which runs Inkling 2 Mini on RDNA3
+and RDNA4 since 0.2.20-poly.2 and has its own fixes for the two ROCm 7.0 faults the
+branch carried before (it did not compile, then faulted on the GPU at the first
+token), plus the hipBLASLt table for its prompt products ([below](#hipblaslt-tuning)). The model is Unsloth's UD-Q4_K_XL
 GGUF (17.6 GB), from the `Mainline_Support` folder of `unsloth/Inkling-2-Mini-GGUF`
 (the layout llama.cpp and strata-poly read; the top-level files are another
 layout), pinned to the commit PolyStrata's setup uses. Unsloth names the file
@@ -503,7 +511,11 @@ and rocBLAS's own kernels for Inkling's shapes are 3-6x slower than the tuned so
 Measured on pc26 on 2026-11-23 (Inkling 2 Mini UD-Q4_K_XL, `--prompt-batch 2048`, one
 run each): 8K / 32K-token prompts at 477 / 426 tok/s without the table, 916 / 765 with
 it, and 953 / 801 with `ROCBLAS_USE_HIPBLASLT=1` too (rocBLAS's hipBLASLt backend for
-the attention products), as `config/server-inkling.json` runs it.
+the attention products), as `config/server-inkling.json` runs it. Upstream's own
+HIP port (merged with 0.2.20-poly.4-hotfix) kept this path: the engine still logs
+`hipBLASLt tuning enabled (44 rows, gfx1101, version 100000)` in
+`/data/strata-inkling.log`. How many products upstream's RDNA3 matrix-core prompt
+kernels (its PR 261) now take instead has not been measured.
 
 For Qwen:
 
