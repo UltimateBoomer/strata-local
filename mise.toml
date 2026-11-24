@@ -1,0 +1,4 @@
+# Loads this machine's deployment settings from .env (not committed; copy .env.example) into the environment, where
+# the Makefile reads them.
+[env]
+_.file = ".env"

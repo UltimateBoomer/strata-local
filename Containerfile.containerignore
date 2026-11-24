@@ -1,0 +1,30 @@
+# What make build leaves out of the PolyStrata checkout it sends as the build context (podman build --ignorefile):
+# the image copies the tree (COPY . ./) but uses none of these. Paths are from the checkout's root.
+# version control and project metadata; make build reads the commit here, before sending
+.git
+.github
+.cache
+# documentation and benchmark records, which the server does not read
+docs
+README*.md
+# build, packing and test products (the checkout's .gitignore)
+build*
+pack
+packs
+models
+mtp
+logs
+.venv
+terminal/.venv
+terminal/build
+terminal/packs
+terminal/models
+terminal/mtp
+engine/third_party/llama.cpp*
+terminal/third_party/llama.cpp*
+tools/bench/tiny-*.gguf
+tools/bench/wide-*.gguf
+**/__pycache__
+**/*.pyc
+.pytest_cache
+**/*.nsys-rep

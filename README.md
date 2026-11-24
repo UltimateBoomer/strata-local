@@ -56,6 +56,9 @@ or TPM change can make the files undecryptable; store the values again if that
 happens. Earlier versions kept the values in the GNOME keyring; with that
 keyring unlocked, `make migrate-keyring-secrets` copies them over once.
 
+The values are stored through Podman: `make set-api-key` sends the value as a
+Podman secret, and the secret driver's store encrypts it on the Podman host, so
+the same command stores a remote deploy host's credentials from another machine.
 Credentials reach the containers as external Podman shell-driver secrets, which
 decrypt the files when each container is created. Rootless Podman runs the
 driver in its user namespace, where your user appears as root and
@@ -64,10 +67,12 @@ asks the system credential service over Varlink instead; the service still sees
 your real UID. The optional absent HF token mounts as an empty value.
 The server wrapper reads `/run/secrets/strata_api_key` into `STRATA_API_KEY`;
 the API key is never written to model configuration or passed in argv.
-Re-run `make up` after changing credentials. Keep this checkout at its current
-path because the driver uses absolute script paths. If you move it, remove the
-two registrations by their full IDs from `podman secret ls`, then run
-`make secrets` again. Repeated startup reuses existing registrations with
+Re-run `make up` after changing credentials. The driver
+(`scripts/podman-secret-driver.sh` and `scripts/credentials.sh`) runs from the
+Podman volume `strata-local-driver`, which `make secrets` fills through Podman
+each time, so the registrations do not depend on where (or whether) a checkout
+is on the host; `make secrets` replaces a registration that names another driver.
+Repeated startup reuses existing registrations with
 `podman secret create --ignore`; changing a credential needs only container
 recreation, not secret replacement. Podman stores only registration IDs under
 `${XDG_DATA_HOME:-$HOME/.local/share}/strata-local/podman-secret-ids`.
@@ -204,30 +209,84 @@ from the SSD and it writes about half as fast as UD-IQ1_M.
 
 ### As a systemd service (Quadlet)
 
-On the machine itself, the server can run as a Podman Quadlet unit of your user's systemd manager instead of a
-compose container. It then starts at boot (with `loginctl enable-linger`) and restarts when it fails:
+The server can run as a Podman Quadlet unit of your user's systemd manager instead of a compose container. It then
+starts at boot (with `loginctl enable-linger`) and restarts when it fails:
 
 ```sh
 make init                            # credentials, config volume, image and models, as for make up
 make down                            # the compose server, if it runs: the unit uses the same port
 make quadlet                         # write ~/.config/containers/systemd/strata-local-server.container
-systemctl --user start strata-local-server
+make up                              # stop it, make init, write the unit if it changed, start it
 ```
 
-`make quadlet` only installs the unit (it reloads systemd but starts nothing); manage the server with
-`systemctl --user start|stop|restart|status strata-local-server`, its log with `podman logs -f strata-local-server`.
-The unit is `quadlet/strata-local-server.container.in`, filled in with `STRATA_BIND_ADDRESS`, `STRATA_PORT`,
-`STRATA_MODEL`, `STRATA_VARIANT` and `STRATA_GPU` (for example `STRATA_VARIANT=q3 make quadlet`); run `make quadlet`
-again after changing them, then restart. A restart makes a fresh container, so it also picks up a rebuilt image and
-`make config`. The unit uses the same image, credentials, `strata-local-config` volume, model volume
-(`strata-local_strata-data`) and port as `make up`: stop it before `make up`, `make calibrate`, `make tune` or a build.
+`make quadlet` writes the unit, `quadlet/strata-local-server.container.in` filled in with `STRATA_BIND_ADDRESS`,
+`STRATA_PORT`, `STRATA_MODEL`, `STRATA_VARIANT` and `STRATA_GPU` (for example `STRATA_VARIANT=q3 make quadlet`), and
+reloads systemd, only when that changes the file; it starts nothing. With the unit installed (`STRATA_SERVER=quadlet`,
+the default then), the targets act on it:
+
+- `make sync` updates the deployment: it stops the server, builds the image, imports `config/` and prepares the
+  models (`make init`), and starts it again, leaving the unit's file as it is. A start makes a fresh container, so it
+  takes the new image, config and credentials.
+- `make up` does the same and also writes the unit with this invocation's values first (`make quadlet`). Without
+  variables that changes nothing, so it is `make sync`.
+- `make down` stops it, `make logs` follows its log (`podman logs -f strata-local-server`), `make status` shows the
+  containers and `/health`, and `make calibrate` and `make tune` stop it first.
+
+`systemctl --user start|stop|restart|status strata-local-server` works too. The unit uses the same image,
+credentials, `strata-local-config` volume, model volume (`strata-local_strata-data`) and port as the compose server.
 The model initializer is not part of the unit (it asks Hugging Face on every run), so a start at boot serves the models
 already prepared. Systemd cannot `enable` or `disable` a generated unit; to stop it starting at boot, run
-`make quadlet-uninstall`, which stops the server and removes the unit (the volumes, image and credentials stay). `make quadlet` refuses to run with `CONTAINER_CONNECTION` set:
-the unit has to be installed on the remote host itself.
+`make quadlet-uninstall`, which stops the server and removes the unit (the volumes, image and credentials stay); then
+`STRATA_SERVER` is `compose` again. Through a plain `CONTAINER_CONNECTION` `make quadlet` refuses to run: the unit is
+systemd's, which only the deploy host's SSH reaches ([Develop here, deploy on a remote host](#develop-here-deploy-on-a-remote-host)).
 
 The unit asks for an unlimited memlock limit, which rootless Podman lowers to your user manager's hard limit. Check
 it with `systemctl show user@$(id -u).service -p LimitMEMLOCK`, and raise it as described for the service user below.
+
+### Develop here, deploy on a remote host
+
+One machine, the deploy host, can run the server while others are for development and keep the only checkouts. Each
+development machine names it in `.env`, which is not committed and which [mise](https://mise.jdx.dev) loads into the
+environment in this directory (`mise.toml`; run `mise trust` once). Copy `.env.example` and fill it in:
+
+```sh
+DEPLOY_HOST=gpu-host                 # SSH host name, and the host's hostname
+DEPLOY_CONNECTION=gpu-host           # Podman connection to its socket (default: DEPLOY_HOST)
+DEPLOY_ADDRESS=192.0.2.10            # the address the server listens on there (default: 127.0.0.1)
+```
+
+On any machine but `DEPLOY_HOST` the targets then work on the host without a copy there:
+
+- through the host's Podman socket (the connection `DEPLOY_CONNECTION`): every target. `make build` uploads the
+  PolyStrata working tree (`STRATA_SRC`, uncommitted changes included) and this directory as the build contexts and
+  compiles there; `make config` imports `config/` into the config volume; `make secrets` installs the secret driver
+  in its volume and registers the secrets; `make set-api-key` sends the value, which the host encrypts to its own key;
+  `make tune` writes its tables here.
+- over SSH to `DEPLOY_HOST`: only the Quadlet unit, which belongs to systemd rather than Podman: writing and removing
+  its file (`make quadlet`, `make quadlet-uninstall`, `make up`) and `systemctl --user stop|start` (`make up`, `sync`,
+  `down`, `stop-server`, `calibrate`, `tune`).
+
+```sh
+make sync                    # deploy this working tree: build on the host, restart its server
+make up STRATA_VARIANT=inkling   # the same, starting with Inkling 2 Mini (rewrites the unit)
+make logs                    # its log; Ctrl-C stops following
+make status                  # its container and /health
+```
+
+`make build` builds `STRATA_SRC` only with `STRATA_BRANCH` (`inkling-amd`) checked out (`STRATA_BRANCH=` builds any).
+It leaves out what `Containerfile.containerignore` names (`.git`, `docs/`, build and packing products; about 100 MB
+is sent instead of 260 MB). On the host the server listens on `DEPLOY_ADDRESS` by default, so the endpoint is
+`http://<DEPLOY_ADDRESS>:9931/v1` from the other machines. On the host itself, or with `DEPLOY_HOST` unset, the
+targets run on the machine they are run on. An explicit `CONTAINER_CONNECTION` uses that Podman alone
+([Remote host](#remote-host)).
+
+One-time setup: on the host, `systemctl --user enable --now podman.socket` (with lingering); on each development
+machine, the connection, with the user, address and socket written out (Podman does not apply `~/.ssh/config`
+aliases):
+
+```sh
+podman system connection add gpu-host ssh://user@192.0.2.10/run/user/1000/podman/podman.sock
+```
 
 ### Remote host
 
@@ -237,13 +296,15 @@ socket path written out (Podman does not apply `~/.ssh/config` aliases), then
 select it with `CONTAINER_CONNECTION`:
 
 ```sh
-podman system connection add pc26 ssh://podman-svc@192.168.0.66/run/user/962/podman/podman.sock
-export CONTAINER_CONNECTION=pc26
+podman system connection add gpu-host ssh://podman-svc@192.0.2.10/run/user/962/podman/podman.sock
+export CONTAINER_CONNECTION=gpu-host
 STRATA_BIND_ADDRESS=0.0.0.0 HIP_ARCHITECTURES=gfx1101 make up
 make logs
 ```
 
-Builds upload the Strata checkout (`STRATA_SRC`, its working tree) and this
+This is the general form of [Develop here, deploy on a remote host](#develop-here-deploy-on-a-remote-host), without its Quadlet unit
+(an explicit `CONTAINER_CONNECTION` turns that off).
+Builds upload the PolyStrata checkout (`STRATA_SRC`, its working tree) and this
 directory as the build contexts and compile on the remote host, so set `HIP_ARCHITECTURES` for its GPU. `make up` also imports `config/`
 into the remote `strata-local-config` volume. `STRATA_BIND_ADDRESS`
 names a remote host address; without it the server is reachable only from the

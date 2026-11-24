@@ -39,9 +39,14 @@ case "$action" in
     fi
     ;;
   store)
-    # Podman requires store during registration. The credential file remains the
-    # source of truth; discard the nonsecret registration marker from stdin.
-    cat >/dev/null
+    # Podman calls store when a secret is created. The credential file remains the source of truth: the registration
+    # marker "registered" (make secrets) leaves it as it is; any other value (make set-api-key, set-hf-token) is
+    # encrypted to it on this host, "strata-local:remove" removing an optional one (Podman refuses empty secrets).
+    value=$(cat)
+    if [ "$value" != registered ]; then
+      [ "$value" != strata-local:remove ] || value=
+      printf %s "$value" | "$credentials" put "$name"
+    fi
     install -d -m 700 "$state_dir"
     umask 077
     : > "$state_dir/$SECRET_ID"
