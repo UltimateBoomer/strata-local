@@ -146,11 +146,17 @@ prompt at 997 tokens/s; q1 wrote 33-36 and read 29,831 tokens at 1,563; q3 wrote
 (7 in the first request after the switch) and read 29,831 at 1,007. Each answered
 17 × 23, repeated an SQL line exactly and found a code in the long prompt.
 
+With PolyStrata 0.2.20-poly.5 merged (the fork's `48f0e161`, 2026-11-26, one request
+each, greedy, prompts of about 10K and 42K tokens of filler
+with a code to find): inkling wrote 46-52 tokens/s (40-42 after 42K) and read 1,215 and
+1,024 tokens/s; q1 wrote 26-39 and read 1,041-1,069 and 1,624 (43K); q3 wrote 9-24
+and read 732-793 and 1,200 (41K). Each answered 17 × 23 and found the code.
+
 #### Inkling 2 Mini
 
 Thinking Machines' Inkling 2 Mini runs on PolyStrata's own engine, `strata-poly`,
 which the image builds next to `strata`. Its HIP build is our fork's `inkling-amd`
-branch: upstream PolyStrata 0.2.20-poly.4-hotfix, which runs Inkling 2 Mini on RDNA3
+branch: upstream PolyStrata 0.2.20-poly.5, which runs Inkling 2 Mini on RDNA3
 and RDNA4 since 0.2.20-poly.2 and has its own fixes for the two ROCm 7.0 faults the
 branch carried before (it did not compile, then faulted on the GPU at the first
 token), plus the hipBLASLt table for its prompt products ([below](#hipblaslt-tuning)). The model is Unsloth's UD-Q4_K_XL
@@ -165,7 +171,13 @@ UD-Q4_K_XL does not fit whole in 16 GB of VRAM: the card holds part of its
 experts and strata-poly reads the rest from RAM. The run config is the one
 PolyStrata's setup writes for an AMD card (`--kv-whole`: the attention caches take
 their VRAM at load; one request at a time) with a 200,000-token context and
-`--prompt-batch 2048`. The model takes 1,048,576 tokens, but its attention caches
+`--prompt-batch 2048`, and with `STRATA_POLY_BELL=0`: 0.2.20-poly.5's GPU doorbell (a
+decoded token routed on the card, the experts it lacks handed to the CPU) wrote 2-5%
+slower on pc26 than routing on the host, in two runs each at 30 to 42K tokens
+(2026-11-26). Its DSpark drafter (`--draft-model dspark-Inkling-2-Mini-Q8_0.gguf`, which
+PolyStrata's setup leaves off on AMD) ran and gave the same answers, 63-74% of its
+guesses taken after long prompts, but wrote no faster: 43.8 / 45.8 / 40.3 tokens/s
+against 49.0 / 46.7 / 42.2 without it (short chat, 10K, 42K), so it is not used. The model takes 1,048,576 tokens, but its attention caches
 need 32 KB a token in VRAM: measured on pc26 with `strata-poly --tokens` (3 tokens
 in, 64 written), 32K leaves about 3,000 of its 3,072 routed experts on the card and
 writes about 61 tokens/s; 128K 1,606 experts, 59 tokens/s; 200K 1,006-1,162, 49;
@@ -515,7 +527,11 @@ the attention products), as `config/server-inkling.json` runs it. Upstream's own
 HIP port (merged with 0.2.20-poly.4-hotfix) kept this path: the engine still logs
 `hipBLASLt tuning enabled (44 rows, gfx1101, version 100000)` in
 `/data/strata-inkling.log`. How many products upstream's RDNA3 matrix-core prompt
-kernels (its PR 261) now take instead has not been measured.
+kernels (its PR 261) now take instead has not been measured. Since 0.2.20-poly.5 the int8
+prompt kernel is the default on RDNA3 (`STRATA_PF_I8MMA=0` turns it off); on pc26 it made
+no difference to Inkling's prompts (10K / 42K tokens at 1,225 / 877 tok/s with it, 1,218 /
+867 with it off and the table, 2026-11-26), and the image's hipBLASLt is the same 1.0
+(ROCm 7.0.2), so the table was not tuned again.
 
 For Qwen:
 

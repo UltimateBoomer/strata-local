@@ -1,7 +1,7 @@
 ARG ROCM_IMAGE=docker.io/rocm/dev-ubuntu-24.04:7.0.2
 FROM $ROCM_IMAGE
 
-# The PolyStrata checkout (our fork of simplexai-labs/PolyStrata, its inkling-amd branch: upstream 0.2.20-poly.4-hotfix
+# The PolyStrata checkout (our fork of simplexai-labs/PolyStrata, its inkling-amd branch: upstream 0.2.20-poly.5
 # and a hipBLASLt table for Inkling 2 Mini's prompt products), which is upstream Strata 0.2.20 plus PolyStrata's own
 # engine, strata-poly, and its server: Qwen3.8-Flash-Next on Strata's engine (strata), Inkling 2 Mini on strata-poly,
 # one server that switches between them on request.

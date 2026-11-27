@@ -15,7 +15,8 @@
     "min_p": 0.0
   },
   "engine_env": {
-    "hipblaslt_tuning": "/config/gfx1101-hipblaslt-100000-inkling.txt"
+    "hipblaslt_tuning": "/config/gfx1101-hipblaslt-100000-inkling.txt",
+    "poly_bell": "0"
   },
   "env": {
     "ROCBLAS_USE_HIPBLASLT": "1"
